@@ -7,6 +7,7 @@ import { ArrowLeft, Loader2, Megaphone } from "lucide-react";
 import { api, getSessionUser } from "@/lib/api";
 
 type Package = { id:number; code:string; name:string; description:string; price:number; posts_included:number };
+type Campaign = { id:number };
 
 export default function NewCampaign(){
   const router=useRouter();
@@ -26,8 +27,8 @@ export default function NewCampaign(){
   async function submit(e:FormEvent){
     e.preventDefault(); setError(""); setSaving(true);
     try{
-      await api("/api/v1/campaigns",{method:"POST",body:JSON.stringify({...form,preferred_publish_at:form.preferred_publish_at?new Date(form.preferred_publish_at).toISOString():null,media_url:form.media_url||null,destination_url:form.destination_url||null})},true);
-      router.push("/advertiser");
+      const campaign=await api<Campaign>("/api/v1/campaigns",{method:"POST",body:JSON.stringify({...form,preferred_publish_at:form.preferred_publish_at?new Date(form.preferred_publish_at).toISOString():null,media_url:form.media_url||null,destination_url:form.destination_url||null})},true);
+      router.push(`/advertiser/campaigns/${campaign.id}/payment`);
     }catch(err){setError(err instanceof Error?err.message:"Unable to create advert");}
     finally{setSaving(false);}
   }
