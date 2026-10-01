@@ -10,9 +10,6 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": ["unrs-resolver"]
-  },
   "dependencies": {
     "lucide-react": "^1.31.0",
     "next": "16.3.1",
