@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import Base, SessionLocal, engine, get_db
+from .media import router as media_router
 from .models import AdvertisingPackage, AuditLog, Campaign, CampaignStatus, Payment, PaymentStatus, SystemSetting, User, UserRole
 from .schemas import AuthToken, CampaignCreate, CampaignDecision, CampaignOut, MetaIntegrationStatus, MetaIntegrationUpdate, PackageOut, PackageWrite, PaymentCreate, PaymentDecision, PaymentOut, UserLogin, UserOut, UserRegister
 from .security import create_access_token, decode_access_token, encrypt_secret, hash_password, verify_password
@@ -46,6 +47,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="Meloli Advertising API", version="0.5.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.include_router(media_router)
 
 
 def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bearer), db: Session = Depends(get_db)) -> User:
