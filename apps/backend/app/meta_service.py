@@ -1,7 +1,6 @@
 import mimetypes
 import os
 from dataclasses import dataclass
-from pathlib import Path
 from urllib.parse import urljoin
 
 import httpx
@@ -21,6 +20,18 @@ class MetaPage:
 class MetaPublishResult:
     post_id: str
     post_url: str | None = None
+
+
+@dataclass
+class MetaPerformanceResult:
+    impressions: int | None = None
+    reach: int | None = None
+    engaged_users: int | None = None
+    clicks: int | None = None
+    reactions: int | None = None
+    comments: int | None = None
+    shares: int | None = None
+    video_views: int | None = None
 
 
 def graph_base(version: str) -> str:
@@ -45,6 +56,66 @@ def verify_page(page_id: str, access_token: str, version: str) -> MetaPage:
     if response.is_error:
         raise MetaError(_meta_message(payload, response.status_code))
     return MetaPage(id=str(payload.get("id") or page_id), name=str(payload.get("name") or "Facebook Page"))
+
+
+def fetch_post_performance(post_id: str, access_token: str, version: str) -> MetaPerformanceResult:
+    """Fetch the metrics Meta exposes for a published Page post.
+
+    Interaction totals and Insights are queried separately. Insights metric
+    availability changes by Graph API version and Page/app permissions, so an
+    unavailable Insights metric never discards interaction data that Meta did
+    return successfully.
+    """
+    result = MetaPerformanceResult()
+    try:
+        response = httpx.get(
+            f"{graph_base(version)}/{post_id}",
+            params={
+                "fields": "shares,comments.limit(0).summary(true),reactions.limit(0).summary(true)",
+                "access_token": access_token,
+            },
+            timeout=30.0,
+        )
+    except httpx.HTTPError as exc:
+        raise MetaError(f"Unable to reach Meta: {exc}") from exc
+    payload = _json(response)
+    if response.is_error:
+        raise MetaError(_meta_message(payload, response.status_code))
+
+    shares = payload.get("shares")
+    if isinstance(shares, dict):
+        result.shares = _as_int(shares.get("count"))
+    result.comments = _summary_total(payload.get("comments"))
+    result.reactions = _summary_total(payload.get("reactions"))
+
+    # Common Page-post Insights metrics. Meta may retire or restrict individual
+    # metrics; failures here are tolerated and the API returns the interaction
+    # totals above. This keeps the portal compatible across Graph API versions.
+    insight_names = [
+        "post_impressions",
+        "post_impressions_unique",
+        "post_engaged_users",
+        "post_clicks",
+        "post_video_views",
+    ]
+    try:
+        insights_response = httpx.get(
+            f"{graph_base(version)}/{post_id}/insights",
+            params={"metric": ",".join(insight_names), "access_token": access_token},
+            timeout=30.0,
+        )
+        insights_payload = _json(insights_response)
+        if not insights_response.is_error:
+            metrics = _insight_map(insights_payload)
+            result.impressions = metrics.get("post_impressions")
+            result.reach = metrics.get("post_impressions_unique")
+            result.engaged_users = metrics.get("post_engaged_users")
+            result.clicks = metrics.get("post_clicks")
+            result.video_views = metrics.get("post_video_views")
+    except httpx.HTTPError:
+        pass
+
+    return result
 
 
 def publish_campaign(
@@ -121,12 +192,53 @@ def _public_media_url(media_url: str) -> str:
 
 
 def _post_url(post_id: str) -> str | None:
-    # Meta post ids frequently use PAGEID_POSTID. This URL is a convenience only;
-    # the canonical id returned by Meta is retained even if the browser URL shape changes.
     if "_" not in post_id:
         return None
     page_id, object_id = post_id.split("_", 1)
     return f"https://www.facebook.com/{page_id}/posts/{object_id}"
+
+
+def _summary_total(value: object) -> int | None:
+    if not isinstance(value, dict):
+        return None
+    summary = value.get("summary")
+    if not isinstance(summary, dict):
+        return None
+    return _as_int(summary.get("total_count"))
+
+
+def _insight_map(payload: dict) -> dict[str, int]:
+    values: dict[str, int] = {}
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return values
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        entries = item.get("values")
+        if not isinstance(name, str) or not isinstance(entries, list) or not entries:
+            continue
+        latest = entries[-1]
+        if isinstance(latest, dict):
+            value = latest.get("value")
+            if isinstance(value, dict):
+                value = sum(v for v in value.values() if isinstance(v, (int, float)))
+            number = _as_int(value)
+            if number is not None:
+                values[name] = number
+    return values
+
+
+def _as_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    try:
+        return int(str(value)) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _json(response: httpx.Response) -> dict:
