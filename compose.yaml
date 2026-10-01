@@ -23,6 +23,7 @@ services:
       SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD:-}
       SUPER_ADMIN_NAME: ${SUPER_ADMIN_NAME:-Meloli Super Admin}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      PUBLIC_BACKEND_URL: ${PUBLIC_BACKEND_URL:-http://localhost:8000}
       MEDIA_ROOT: /data/media
       MAX_MEDIA_BYTES: ${MAX_MEDIA_BYTES:-26214400}
     volumes:
