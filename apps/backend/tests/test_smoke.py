@@ -15,7 +15,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB}"
 os.environ["MEDIA_ROOT"] = str(TEST_MEDIA)
 os.environ["JWT_SECRET"] = "test-jwt-secret"
 os.environ["SETTINGS_ENCRYPTION_KEY"] = "test-settings-secret"
-os.environ["SUPER_ADMIN_EMAIL"] = "admin@meloli.test"
+os.environ["SUPER_ADMIN_EMAIL"] = "admin@example.com"
 os.environ["SUPER_ADMIN_PASSWORD"] = "StrongTestPassword123!"
 os.environ["SUPER_ADMIN_NAME"] = "Test Admin"
 
@@ -38,12 +38,12 @@ def test_advertising_workflow_smoke():
             json={
                 "full_name": "Advertiser Test",
                 "business_name": "Test Business",
-                "email": "advertiser@meloli.test",
+                "email": "advertiser@example.com",
                 "phone": "+26650000000",
                 "password": "AdvertiserPassword123!",
             },
         )
-        assert register.status_code == 201
+        assert register.status_code == 201, register.text
         advertiser_token = register.json()["access_token"]
 
         packages = client.get("/api/v1/packages")
@@ -56,7 +56,7 @@ def test_advertising_workflow_smoke():
             headers=auth(advertiser_token),
             json={"title": "Test advert", "caption": "A test advert caption", "package_code": package_code},
         )
-        assert campaign.status_code == 201
+        assert campaign.status_code == 201, campaign.text
         campaign_id = campaign.json()["id"]
         assert campaign.json()["status"] == "payment_pending"
 
@@ -65,14 +65,14 @@ def test_advertising_workflow_smoke():
             headers=auth(advertiser_token),
             json={"method": "manual", "reference": "TEST-001"},
         )
-        assert payment.status_code == 201
+        assert payment.status_code == 201, payment.text
         payment_id = payment.json()["id"]
 
         admin_login = client.post(
             "/api/v1/auth/login",
-            json={"email": "admin@meloli.test", "password": "StrongTestPassword123!"},
+            json={"email": "admin@example.com", "password": "StrongTestPassword123!"},
         )
-        assert admin_login.status_code == 200
+        assert admin_login.status_code == 200, admin_login.text
         admin_token = admin_login.json()["access_token"]
 
         paid = client.patch(
@@ -80,7 +80,7 @@ def test_advertising_workflow_smoke():
             headers=auth(admin_token),
             json={"status": "paid", "reference": "TEST-001"},
         )
-        assert paid.status_code == 200
+        assert paid.status_code == 200, paid.text
         assert paid.json()["status"] == "paid"
 
         campaigns = client.get("/api/v1/campaigns", headers=auth(admin_token))
@@ -93,11 +93,11 @@ def test_advertising_workflow_smoke():
             headers=auth(admin_token),
             json={"status": "approved", "reviewer_note": "Approved for publication"},
         )
-        assert approved.status_code == 200
+        assert approved.status_code == 200, approved.text
         assert approved.json()["status"] == "approved"
 
         receipt = client.get(f"/api/v1/payments/{payment_id}/receipt.pdf", headers=auth(advertiser_token))
-        assert receipt.status_code == 200
+        assert receipt.status_code == 200, receipt.text
         assert receipt.headers["content-type"] == "application/pdf"
         assert receipt.content.startswith(b"%PDF")
 
