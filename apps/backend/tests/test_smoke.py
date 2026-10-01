@@ -1,11 +1,18 @@
 import os
+import shutil
 from pathlib import Path
 
-TEST_DB = Path(__file__).parent / "test_meloli.db"
+TEST_DIR = Path(__file__).parent
+TEST_DB = TEST_DIR / "test_meloli.db"
+TEST_MEDIA = TEST_DIR / "test_media"
 if TEST_DB.exists():
     TEST_DB.unlink()
+if TEST_MEDIA.exists():
+    shutil.rmtree(TEST_MEDIA)
+TEST_MEDIA.mkdir(parents=True, exist_ok=True)
 
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB}"
+os.environ["MEDIA_ROOT"] = str(TEST_MEDIA)
 os.environ["JWT_SECRET"] = "test-jwt-secret"
 os.environ["SETTINGS_ENCRYPTION_KEY"] = "test-settings-secret"
 os.environ["SUPER_ADMIN_EMAIL"] = "admin@meloli.test"
