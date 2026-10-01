@@ -26,6 +26,7 @@ services:
       PUBLIC_BACKEND_URL: ${PUBLIC_BACKEND_URL:-http://localhost:8000}
       MEDIA_ROOT: /data/media
       MAX_MEDIA_BYTES: ${MAX_MEDIA_BYTES:-26214400}
+      PUBLISHER_WORKER_ENABLED: "true"
     volumes:
       - meloli_media:/data/media
     depends_on:
@@ -33,6 +34,23 @@ services:
         condition: service_healthy
     ports:
       - "8000:8000"
+
+  publisher-worker:
+    build: ./apps/backend
+    command: ["sh", "-c", "alembic -c alembic.ini upgrade head && python -m app.worker"]
+    environment:
+      DATABASE_URL: postgresql+psycopg2://meloli:meloli_dev@db:5432/meloli
+      SETTINGS_ENCRYPTION_KEY: ${SETTINGS_ENCRYPTION_KEY:-change-this-before-production-too}
+      PUBLIC_BACKEND_URL: ${PUBLIC_BACKEND_URL:-http://localhost:8000}
+      MEDIA_ROOT: /data/media
+      PUBLISHER_POLL_SECONDS: ${PUBLISHER_POLL_SECONDS:-60}
+      PUBLISHER_BATCH_SIZE: ${PUBLISHER_BATCH_SIZE:-20}
+    volumes:
+      - meloli_media:/data/media
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
 
   frontend:
     build: ./apps/frontend
