@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, SecretStr
 
-from .models import CampaignStatus, PaymentStatus, UserRole
+from .models import CampaignStatus, PaymentStatus, PublicationStatus, UserRole
 
 
 class UserRegister(BaseModel):
@@ -82,6 +82,7 @@ class CampaignOut(BaseModel):
     reviewer_note: str | None
     facebook_post_id: str | None
     facebook_post_url: str | None
+    published_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -115,6 +116,47 @@ class PaymentDecision(BaseModel):
     reference: str | None = Field(default=None, max_length=160)
 
 
+class PublicationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    campaign_id: int
+    status: PublicationStatus
+    attempt_number: int
+    external_post_id: str | None
+    external_post_url: str | None
+    error_message: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PublishResult(BaseModel):
+    campaign: CampaignOut
+    publication: PublicationOut
+
+
+class NotificationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    user_id: int
+    kind: str
+    title: str
+    message: str
+    read_at: datetime | None
+    created_at: datetime
+
+
+class ReportSummary(BaseModel):
+    advertisers: int
+    campaigns: int
+    awaiting_review: int
+    scheduled: int
+    published: int
+    paid_payments: int
+    revenue: float
+    currency: str = "LSL"
+    failed_publications: int
+
+
 class MetaIntegrationUpdate(BaseModel):
     app_id: str = Field(min_length=3, max_length=200)
     app_secret: SecretStr | None = None
@@ -130,6 +172,7 @@ class MetaIntegrationStatus(BaseModel):
     connected: bool
     app_id: str | None = None
     page_id: str | None = None
+    page_name: str | None = None
     webhook_callback_url: str | None = None
     graph_api_version: str | None = None
     app_secret_configured: bool = False
