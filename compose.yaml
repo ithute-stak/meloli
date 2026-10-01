@@ -17,6 +17,12 @@ services:
     build: ./apps/backend
     environment:
       DATABASE_URL: postgresql+psycopg2://meloli:meloli_dev@db:5432/meloli
+      JWT_SECRET: ${JWT_SECRET:-change-this-before-production}
+      SETTINGS_ENCRYPTION_KEY: ${SETTINGS_ENCRYPTION_KEY:-change-this-before-production-too}
+      SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:-}
+      SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD:-}
+      SUPER_ADMIN_NAME: ${SUPER_ADMIN_NAME:-Meloli Super Admin}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     depends_on:
       db:
         condition: service_healthy
@@ -26,7 +32,7 @@ services:
   frontend:
     build: ./apps/frontend
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     depends_on:
       - backend
     ports:
