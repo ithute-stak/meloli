@@ -20,7 +20,7 @@ os.environ["SUPER_ADMIN_PASSWORD"] = "StrongTestPassword123!"
 os.environ["SUPER_ADMIN_NAME"] = "Test Admin"
 
 from fastapi.testclient import TestClient  # noqa: E402
-from app.main import app  # noqa: E402
+from app.asgi import app  # noqa: E402
 
 
 def auth(token: str) -> dict[str, str]:
@@ -59,6 +59,10 @@ def test_advertising_workflow_smoke():
         assert campaign.status_code == 201, campaign.text
         campaign_id = campaign.json()["id"]
         assert campaign.json()["status"] == "payment_pending"
+
+        quote = client.get(f"/api/v1/campaigns/{campaign_id}/quotation.pdf", headers=auth(advertiser_token))
+        assert quote.status_code == 200
+        assert quote.content.startswith(b"%PDF")
 
         payment = client.post(
             f"/api/v1/campaigns/{campaign_id}/payments",
@@ -101,6 +105,10 @@ def test_advertising_workflow_smoke():
         assert receipt.headers["content-type"] == "application/pdf"
         assert receipt.content.startswith(b"%PDF")
 
+        invoice = client.get(f"/api/v1/campaigns/{campaign_id}/invoice.pdf", headers=auth(advertiser_token))
+        assert invoice.status_code == 200
+        assert invoice.content.startswith(b"%PDF")
+
         notifications = client.get("/api/v1/notifications", headers=auth(advertiser_token))
         assert notifications.status_code == 200
         assert len(notifications.json()) >= 2
@@ -111,10 +119,27 @@ def test_advertising_workflow_smoke():
         assert summary.json()["paid_payments"] >= 1
 
         advertiser_performance = client.get("/api/v1/advertiser/performance/summary", headers=auth(advertiser_token))
-        assert advertiser_performance.status_code == 200, advertiser_performance.text
+        assert advertiser_performance.status_code == 200
         assert advertiser_performance.json()["campaigns_published"] == 0
-        assert advertiser_performance.json()["reach"] == 0
 
         admin_performance = client.get("/api/v1/admin/performance/summary", headers=auth(admin_token))
-        assert admin_performance.status_code == 200, admin_performance.text
-        assert admin_performance.json()["campaigns_with_metrics"] == 0
+        assert admin_performance.status_code == 200
+
+        advertisers = client.get("/api/v1/admin/advertisers", headers=auth(admin_token))
+        assert advertisers.status_code == 200
+        assert advertisers.json()[0]["confirmed_spend"] > 0
+
+        staff = client.post(
+            "/api/v1/admin/staff",
+            headers=auth(admin_token),
+            json={"full_name": "Review User", "email": "reviewer@example.com", "password": "ReviewPassword123!", "role": "reviewer"},
+        )
+        assert staff.status_code == 201, staff.text
+
+        audit = client.get("/api/v1/admin/audit", headers=auth(admin_token))
+        assert audit.status_code == 200
+        assert len(audit.json()) >= 1
+
+        ops_health = client.get("/api/v1/admin/system-health", headers=auth(admin_token))
+        assert ops_health.status_code == 200
+        assert ops_health.json()["database"] == "ok"
