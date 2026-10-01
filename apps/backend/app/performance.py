@@ -44,6 +44,13 @@ class PerformanceSummary(BaseModel):
     click_rate: float
 
 
+class BulkSyncResult(BaseModel):
+    eligible: int
+    synced: int
+    failed: int
+    failures: list[str]
+
+
 def authenticated_user(credentials: HTTPAuthorizationCredentials | None = Depends(bearer), db: Session = Depends(get_db)) -> User:
     if credentials is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
@@ -112,30 +119,10 @@ def _summary(rows: list[CampaignPerformance], published_count: int) -> Performan
     )
 
 
-@router.get("/api/v1/campaigns/{campaign_id}/performance", response_model=CampaignPerformanceOut | None)
-def campaign_performance(campaign_id: int, user: User = Depends(authenticated_user), db: Session = Depends(get_db)):
-    campaign_for_user(db, campaign_id, user)
-    return db.scalar(select(CampaignPerformance).where(CampaignPerformance.campaign_id == campaign_id))
-
-
-@router.post("/api/v1/campaigns/{campaign_id}/performance/sync", response_model=CampaignPerformanceOut)
-def sync_campaign_performance(campaign_id: int, _: User = Depends(publisher_user), db: Session = Depends(get_db)):
-    campaign = db.get(Campaign, campaign_id)
-    if not campaign:
-        raise HTTPException(status_code=404, detail="Campaign not found")
+def _sync_one(db: Session, campaign: Campaign, token: str, version: str) -> CampaignPerformance:
     if campaign.status != CampaignStatus.PUBLISHED or not campaign.facebook_post_id:
-        raise HTTPException(status_code=409, detail="Only published Facebook campaigns can sync performance")
-
-    token = setting(db, "meta.page_access_token")
-    version = setting(db, "meta.graph_api_version")
-    if not token or not version:
-        raise HTTPException(status_code=409, detail="Meta Page access token and Graph API version are required")
-
-    try:
-        result = fetch_post_performance(campaign.facebook_post_id, token, version)
-    except MetaError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
+        raise MetaError("Only published Facebook campaigns can sync performance")
+    result = fetch_post_performance(campaign.facebook_post_id, token, version)
     row = db.scalar(select(CampaignPerformance).where(CampaignPerformance.campaign_id == campaign.id))
     if row is None:
         row = CampaignPerformance(campaign_id=campaign.id)
@@ -149,9 +136,51 @@ def sync_campaign_performance(campaign_id: int, _: User = Depends(publisher_user
     row.shares = result.shares
     row.video_views = result.video_views
     row.synced_at = datetime.now(timezone.utc)
+    return row
+
+
+@router.get("/api/v1/campaigns/{campaign_id}/performance", response_model=CampaignPerformanceOut | None)
+def campaign_performance(campaign_id: int, user: User = Depends(authenticated_user), db: Session = Depends(get_db)):
+    campaign_for_user(db, campaign_id, user)
+    return db.scalar(select(CampaignPerformance).where(CampaignPerformance.campaign_id == campaign_id))
+
+
+@router.post("/api/v1/campaigns/{campaign_id}/performance/sync", response_model=CampaignPerformanceOut)
+def sync_campaign_performance(campaign_id: int, _: User = Depends(publisher_user), db: Session = Depends(get_db)):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    token = setting(db, "meta.page_access_token")
+    version = setting(db, "meta.graph_api_version")
+    if not token or not version:
+        raise HTTPException(status_code=409, detail="Meta Page access token and Graph API version are required")
+    try:
+        row = _sync_one(db, campaign, token, version)
+    except MetaError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     db.commit()
     db.refresh(row)
     return row
+
+
+@router.post("/api/v1/admin/performance/sync", response_model=BulkSyncResult)
+def sync_all_performance(_: User = Depends(publisher_user), db: Session = Depends(get_db)):
+    token = setting(db, "meta.page_access_token")
+    version = setting(db, "meta.graph_api_version")
+    if not token or not version:
+        raise HTTPException(status_code=409, detail="Meta Page access token and Graph API version are required")
+    campaigns = list(db.scalars(select(Campaign).where(Campaign.status == CampaignStatus.PUBLISHED, Campaign.facebook_post_id.is_not(None)).order_by(Campaign.published_at.desc())))
+    synced = 0
+    failures: list[str] = []
+    for campaign in campaigns:
+        try:
+            _sync_one(db, campaign, token, version)
+            db.commit()
+            synced += 1
+        except MetaError as exc:
+            db.rollback()
+            failures.append(f"Campaign {campaign.id}: {str(exc)[:180]}")
+    return BulkSyncResult(eligible=len(campaigns), synced=synced, failed=len(failures), failures=failures[:20])
 
 
 @router.get("/api/v1/advertiser/performance/summary", response_model=PerformanceSummary)
