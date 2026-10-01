@@ -1,7 +1,28 @@
+"use client";
+
 import Link from "next/link";
-import { ArrowLeft, LockKeyhole, Mail, Megaphone } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { FormEvent, useState } from "react";
+import { ArrowLeft, Loader2, LockKeyhole, Mail, Megaphone } from "lucide-react";
+import { api, AuthResponse, saveSession } from "@/lib/api";
 
 export default function LoginPage(){
+  const router = useRouter();
+  const [email,setEmail]=useState("");
+  const [password,setPassword]=useState("");
+  const [error,setError]=useState("");
+  const [loading,setLoading]=useState(false);
+
+  async function submit(event:FormEvent){
+    event.preventDefault(); setError(""); setLoading(true);
+    try{
+      const auth=await api<AuthResponse>("/api/v1/auth/login",{method:"POST",body:JSON.stringify({email,password})});
+      saveSession(auth);
+      router.push(auth.user.role==="advertiser"?"/advertiser":"/dashboard");
+    }catch(err){setError(err instanceof Error?err.message:"Unable to sign in");}
+    finally{setLoading(false);}
+  }
+
   return <main className="min-h-screen bg-[#f5f6fa] lg:grid lg:grid-cols-2">
     <section className="relative hidden overflow-hidden bg-[#070a45] p-12 text-white lg:flex lg:flex-col lg:justify-between">
       <div className="absolute -right-20 top-20 h-80 w-80 rounded-full bg-[#e31545]/20 blur-3xl"/>
@@ -14,13 +35,14 @@ export default function LoginPage(){
         <Link href="/" className="mb-8 inline-flex items-center gap-2 text-sm font-bold text-slate-500 lg:hidden"><ArrowLeft size={16}/> Back home</Link>
         <div className="mb-8 lg:hidden"><div className="text-2xl font-black tracking-tight"><span className="text-[#070a45]">MELOLI</span><span className="text-[#e31545]">AIRWAVES</span></div><p className="mt-1 text-xs font-bold uppercase tracking-[.18em] text-slate-400">Advertising Portal</p></div>
         <h2 className="text-3xl font-black tracking-tight text-[#070a45]">Welcome back</h2><p className="mt-2 text-slate-500">Sign in to manage your adverts and approvals.</p>
-        <form className="mt-8 space-y-5" action="/dashboard">
-          <label className="block"><span className="mb-2 block text-sm font-bold text-slate-700">Email address</span><div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 shadow-sm focus-within:border-[#070a45]"><Mail size={18} className="text-slate-400"/><input className="h-14 w-full outline-none" type="email" placeholder="you@example.com" required/></div></label>
-          <label className="block"><div className="mb-2 flex items-center justify-between"><span className="text-sm font-bold text-slate-700">Password</span><a href="#" className="text-xs font-bold text-[#e31545]">Forgot password?</a></div><div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 shadow-sm focus-within:border-[#070a45]"><LockKeyhole size={18} className="text-slate-400"/><input className="h-14 w-full outline-none" type="password" placeholder="••••••••" required/></div></label>
-          <button className="h-14 w-full rounded-2xl bg-[#070a45] font-extrabold text-white shadow-lg shadow-indigo-950/20">Sign in</button>
+        <form className="mt-8 space-y-5" onSubmit={submit}>
+          <label className="block"><span className="mb-2 block text-sm font-bold text-slate-700">Email address</span><div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 shadow-sm focus-within:border-[#070a45]"><Mail size={18} className="text-slate-400"/><input className="h-14 w-full outline-none" type="email" placeholder="you@example.com" value={email} onChange={e=>setEmail(e.target.value)} required/></div></label>
+          <label className="block"><div className="mb-2 flex items-center justify-between"><span className="text-sm font-bold text-slate-700">Password</span><span className="text-xs font-bold text-slate-400">Secure sign in</span></div><div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 shadow-sm focus-within:border-[#070a45]"><LockKeyhole size={18} className="text-slate-400"/><input className="h-14 w-full outline-none" type="password" placeholder="••••••••" value={password} onChange={e=>setPassword(e.target.value)} required/></div></label>
+          {error&&<div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{error}</div>}
+          <button disabled={loading} className="flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-[#070a45] font-extrabold text-white shadow-lg shadow-indigo-950/20 disabled:opacity-60">{loading&&<Loader2 size={18} className="animate-spin"/>}{loading?"Signing in...":"Sign in"}</button>
         </form>
         <div className="my-7 flex items-center gap-3"><div className="h-px flex-1 bg-slate-200"/><span className="text-xs font-bold uppercase tracking-widest text-slate-400">New advertiser?</span><div className="h-px flex-1 bg-slate-200"/></div>
-        <button className="h-14 w-full rounded-2xl border border-slate-200 bg-white font-extrabold text-[#070a45]">Create advertiser account</button>
+        <Link href="/register" className="grid h-14 w-full place-items-center rounded-2xl border border-slate-200 bg-white font-extrabold text-[#070a45]">Create advertiser account</Link>
       </div>
     </section>
   </main>
