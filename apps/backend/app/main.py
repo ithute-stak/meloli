@@ -1,5 +1,6 @@
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,19 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import Base, SessionLocal, engine, get_db
-from .models import AdvertisingPackage, Campaign, CampaignStatus, SystemSetting, User, UserRole
-from .schemas import (
-    AuthToken,
-    CampaignCreate,
-    CampaignDecision,
-    CampaignOut,
-    MetaIntegrationStatus,
-    MetaIntegrationUpdate,
-    PackageOut,
-    UserLogin,
-    UserOut,
-    UserRegister,
-)
+from .models import AdvertisingPackage, AuditLog, Campaign, CampaignStatus, Payment, PaymentStatus, SystemSetting, User, UserRole
+from .schemas import AuthToken, CampaignCreate, CampaignDecision, CampaignOut, MetaIntegrationStatus, MetaIntegrationUpdate, PackageOut, PaymentCreate, PaymentDecision, PaymentOut, UserLogin, UserOut, UserRegister
 from .security import create_access_token, decode_access_token, encrypt_secret, hash_password, verify_password
 
 bearer = HTTPBearer(auto_error=False)
@@ -54,14 +44,8 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Meloli Advertising API", version="0.3.0", lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="Meloli Advertising API", version="0.4.0", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 
 def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bearer), db: Session = Depends(get_db)) -> User:
@@ -89,6 +73,10 @@ def super_admin(user: User = Depends(current_user)) -> User:
     return user
 
 
+def audit(db: Session, actor: User | None, action: str, entity_type: str, entity_id: int | str | None = None, detail: str | None = None) -> None:
+    db.add(AuditLog(actor_user_id=actor.id if actor else None, action=action, entity_type=entity_type, entity_id=str(entity_id) if entity_id is not None else None, detail=detail))
+
+
 def get_setting(db: Session, key: str) -> SystemSetting | None:
     return db.scalar(select(SystemSetting).where(SystemSetting.key == key))
 
@@ -107,32 +95,19 @@ def meta_status(db: Session) -> MetaIntegrationStatus:
     def value(key: str) -> str | None:
         item = get_setting(db, key)
         return item.value if item and not item.encrypted else None
-
     def present(key: str) -> bool:
         item = get_setting(db, key)
         return bool(item and item.value)
-
     tracked = [get_setting(db, key) for key in ("meta.app_id", "meta.page_id", "meta.app_secret", "meta.page_access_token", "meta.webhook_verify_token")]
     updated = [item.updated_at for item in tracked if item is not None]
     app_id = value("meta.app_id")
     page_id = value("meta.page_id")
-    return MetaIntegrationStatus(
-        configured=bool(app_id and page_id and present("meta.page_access_token")),
-        connected=value("meta.connected") == "true",
-        app_id=app_id,
-        page_id=page_id,
-        webhook_callback_url=value("meta.webhook_callback_url"),
-        graph_api_version=value("meta.graph_api_version"),
-        app_secret_configured=present("meta.app_secret"),
-        page_access_token_configured=present("meta.page_access_token"),
-        webhook_verify_token_configured=present("meta.webhook_verify_token"),
-        updated_at=max(updated) if updated else None,
-    )
+    return MetaIntegrationStatus(configured=bool(app_id and page_id and present("meta.page_access_token")), connected=value("meta.connected") == "true", app_id=app_id, page_id=page_id, webhook_callback_url=value("meta.webhook_callback_url"), graph_api_version=value("meta.graph_api_version"), app_secret_configured=present("meta.app_secret"), page_access_token_configured=present("meta.page_access_token"), webhook_verify_token_configured=present("meta.webhook_verify_token"), updated_at=max(updated) if updated else None)
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "meloli-api", "version": "0.3.0"}
+    return {"status": "ok", "service": "meloli-api", "version": "0.4.0"}
 
 
 @app.post("/api/v1/auth/register", response_model=AuthToken, status_code=201)
@@ -141,9 +116,7 @@ def register(payload: UserRegister, db: Session = Depends(get_db)):
     if db.scalar(select(User).where(User.email == email)):
         raise HTTPException(status_code=409, detail="An account already exists for this email")
     user = User(full_name=payload.full_name, business_name=payload.business_name, email=email, phone=payload.phone, password_hash=hash_password(payload.password), role=UserRole.ADVERTISER)
-    db.add(user)
-    db.commit()
-    db.refresh(user)
+    db.add(user); db.flush(); audit(db, user, "account.registered", "user", user.id); db.commit(); db.refresh(user)
     return AuthToken(access_token=create_access_token(user.id, user.role.value), user=user)
 
 
@@ -181,31 +154,69 @@ def create_campaign(payload: CampaignCreate, user: User = Depends(current_user),
     if not package:
         raise HTTPException(status_code=400, detail="Advertising package is unavailable")
     campaign = Campaign(advertiser_id=user.id, package_id=package.id, title=payload.title, caption=payload.caption, media_url=payload.media_url, destination_url=payload.destination_url, preferred_publish_at=payload.preferred_publish_at, status=CampaignStatus.PAYMENT_PENDING)
-    db.add(campaign)
-    db.commit()
-    db.refresh(campaign)
+    db.add(campaign); db.flush(); audit(db, user, "campaign.created", "campaign", campaign.id, f"Package {package.code}"); db.commit(); db.refresh(campaign)
     return campaign
 
 
 @app.patch("/api/v1/campaigns/{campaign_id}/decision", response_model=CampaignOut)
-def decide_campaign(campaign_id: int, payload: CampaignDecision, _: User = Depends(staff_user), db: Session = Depends(get_db)):
+def decide_campaign(campaign_id: int, payload: CampaignDecision, staff: User = Depends(staff_user), db: Session = Depends(get_db)):
     campaign = db.get(Campaign, campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
     allowed = {CampaignStatus.IN_REVIEW, CampaignStatus.CHANGES_REQUESTED, CampaignStatus.APPROVED, CampaignStatus.SCHEDULED, CampaignStatus.REJECTED}
     if payload.status not in allowed:
         raise HTTPException(status_code=400, detail="Unsupported editorial decision")
+    if campaign.status == CampaignStatus.PAYMENT_PENDING:
+        raise HTTPException(status_code=409, detail="Payment must be confirmed before editorial review")
     if payload.status == CampaignStatus.CHANGES_REQUESTED and not payload.reviewer_note:
         raise HTTPException(status_code=400, detail="A change request must include a reviewer note")
-    campaign.status = payload.status
-    campaign.reviewer_note = payload.reviewer_note
+    campaign.status = payload.status; campaign.reviewer_note = payload.reviewer_note
     if payload.status == CampaignStatus.SCHEDULED:
         if not payload.scheduled_publish_at:
             raise HTTPException(status_code=400, detail="Scheduled campaigns require a publishing date")
         campaign.scheduled_publish_at = payload.scheduled_publish_at
-    db.commit()
-    db.refresh(campaign)
+    audit(db, staff, f"campaign.{payload.status.value}", "campaign", campaign.id, payload.reviewer_note); db.commit(); db.refresh(campaign)
     return campaign
+
+
+@app.get("/api/v1/campaigns/{campaign_id}/payments", response_model=list[PaymentOut])
+def list_payments(campaign_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if user.role == UserRole.ADVERTISER and campaign.advertiser_id != user.id:
+        raise HTTPException(status_code=403, detail="You cannot access this campaign")
+    return list(db.scalars(select(Payment).where(Payment.campaign_id == campaign_id).order_by(Payment.created_at.desc())))
+
+
+@app.post("/api/v1/campaigns/{campaign_id}/payments", response_model=PaymentOut, status_code=201)
+def create_payment(campaign_id: int, payload: PaymentCreate, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if user.role == UserRole.ADVERTISER and campaign.advertiser_id != user.id:
+        raise HTTPException(status_code=403, detail="You cannot pay for this campaign")
+    package = db.get(AdvertisingPackage, campaign.package_id)
+    payment = Payment(campaign_id=campaign.id, amount=package.price, currency=package.currency, method=payload.method, reference=payload.reference, status=PaymentStatus.PENDING)
+    db.add(payment); db.flush(); audit(db, user, "payment.created", "payment", payment.id, f"Campaign {campaign.id}"); db.commit(); db.refresh(payment)
+    return payment
+
+
+@app.patch("/api/v1/payments/{payment_id}", response_model=PaymentOut)
+def decide_payment(payment_id: int, payload: PaymentDecision, staff: User = Depends(staff_user), db: Session = Depends(get_db)):
+    payment = db.get(Payment, payment_id)
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    payment.status = payload.status
+    if payload.reference is not None:
+        payment.reference = payload.reference
+    if payload.status == PaymentStatus.PAID:
+        payment.paid_at = datetime.now(timezone.utc)
+        campaign = db.get(Campaign, payment.campaign_id)
+        if campaign and campaign.status == CampaignStatus.PAYMENT_PENDING:
+            campaign.status = CampaignStatus.SUBMITTED
+    audit(db, staff, f"payment.{payload.status.value}", "payment", payment.id, payment.reference); db.commit(); db.refresh(payment)
+    return payment
 
 
 @app.get("/api/v1/system/integrations/meta", response_model=MetaIntegrationStatus)
@@ -214,24 +225,15 @@ def get_meta_integration(_: User = Depends(super_admin), db: Session = Depends(g
 
 
 @app.put("/api/v1/system/integrations/meta", response_model=MetaIntegrationStatus)
-def update_meta_integration(payload: MetaIntegrationUpdate, _: User = Depends(super_admin), db: Session = Depends(get_db)):
-    set_setting(db, "meta.app_id", payload.app_id)
-    set_setting(db, "meta.page_id", payload.page_id)
-    set_setting(db, "meta.webhook_callback_url", payload.webhook_callback_url)
-    set_setting(db, "meta.graph_api_version", payload.graph_api_version)
-    if payload.app_secret is not None:
-        set_setting(db, "meta.app_secret", payload.app_secret.get_secret_value(), encrypted=True)
-    if payload.page_access_token is not None:
-        set_setting(db, "meta.page_access_token", payload.page_access_token.get_secret_value(), encrypted=True)
-    if payload.webhook_verify_token is not None:
-        set_setting(db, "meta.webhook_verify_token", payload.webhook_verify_token.get_secret_value(), encrypted=True)
-    set_setting(db, "meta.connected", "false")
-    db.commit()
+def update_meta_integration(payload: MetaIntegrationUpdate, admin: User = Depends(super_admin), db: Session = Depends(get_db)):
+    set_setting(db, "meta.app_id", payload.app_id); set_setting(db, "meta.page_id", payload.page_id); set_setting(db, "meta.webhook_callback_url", payload.webhook_callback_url); set_setting(db, "meta.graph_api_version", payload.graph_api_version)
+    if payload.app_secret is not None: set_setting(db, "meta.app_secret", payload.app_secret.get_secret_value(), encrypted=True)
+    if payload.page_access_token is not None: set_setting(db, "meta.page_access_token", payload.page_access_token.get_secret_value(), encrypted=True)
+    if payload.webhook_verify_token is not None: set_setting(db, "meta.webhook_verify_token", payload.webhook_verify_token.get_secret_value(), encrypted=True)
+    set_setting(db, "meta.connected", "false"); audit(db, admin, "meta.configuration.updated", "system_setting", detail="Meta integration configuration changed"); db.commit()
     return meta_status(db)
 
 
 @app.post("/api/v1/system/integrations/meta/test", response_model=MetaIntegrationStatus)
 def test_meta_integration(_: User = Depends(super_admin), db: Session = Depends(get_db)):
-    set_setting(db, "meta.connected", "false")
-    db.commit()
-    return meta_status(db)
+    set_setting(db, "meta.connected", "false"); db.commit(); return meta_status(db)
