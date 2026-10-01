@@ -48,6 +48,16 @@ class PackageOut(BaseModel):
     active: bool
 
 
+class PackageWrite(BaseModel):
+    code: str = Field(min_length=2, max_length=50)
+    name: str = Field(min_length=2, max_length=160)
+    description: str = Field(default="", max_length=3000)
+    price: float = Field(gt=0)
+    currency: str = Field(default="LSL", min_length=3, max_length=8)
+    posts_included: int = Field(default=1, ge=1, le=100)
+    active: bool = True
+
+
 class CampaignCreate(BaseModel):
     title: str = Field(min_length=3, max_length=160)
     caption: str = Field(min_length=3, max_length=5000)
