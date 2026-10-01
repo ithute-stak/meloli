@@ -33,6 +33,12 @@ class PaymentStatus(StrEnum):
     REFUNDED = "refunded"
 
 
+class PublicationStatus(StrEnum):
+    PENDING = "pending"
+    PUBLISHED = "published"
+    FAILED = "failed"
+
+
 class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -45,6 +51,7 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     campaigns: Mapped[list["Campaign"]] = relationship(back_populates="advertiser")
+    notifications: Mapped[list["Notification"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
 class AdvertisingPackage(Base):
@@ -76,11 +83,13 @@ class Campaign(Base):
     reviewer_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     facebook_post_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     facebook_post_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     advertiser: Mapped[User] = relationship(back_populates="campaigns")
     package: Mapped[AdvertisingPackage] = relationship(back_populates="campaigns")
     payments: Mapped[list["Payment"]] = relationship(back_populates="campaign")
+    publications: Mapped[list["PublicationAttempt"]] = relationship(back_populates="campaign", cascade="all, delete-orphan")
 
 
 class Payment(Base):
@@ -95,6 +104,32 @@ class Payment(Base):
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     campaign: Mapped[Campaign] = relationship(back_populates="payments")
+
+
+class PublicationAttempt(Base):
+    __tablename__ = "publication_attempts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id"), index=True)
+    status: Mapped[PublicationStatus] = mapped_column(Enum(PublicationStatus, name="publication_status"), default=PublicationStatus.PENDING, index=True)
+    attempt_number: Mapped[int] = mapped_column(Integer, default=1)
+    external_post_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    external_post_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    campaign: Mapped[Campaign] = relationship(back_populates="publications")
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(80), index=True)
+    title: Mapped[str] = mapped_column(String(180))
+    message: Mapped[str] = mapped_column(Text)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    user: Mapped[User] = relationship(back_populates="notifications")
 
 
 class AuditLog(Base):
