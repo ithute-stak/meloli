@@ -109,3 +109,12 @@ def test_advertising_workflow_smoke():
         assert summary.status_code == 200
         assert summary.json()["campaigns"] >= 1
         assert summary.json()["paid_payments"] >= 1
+
+        advertiser_performance = client.get("/api/v1/advertiser/performance/summary", headers=auth(advertiser_token))
+        assert advertiser_performance.status_code == 200, advertiser_performance.text
+        assert advertiser_performance.json()["campaigns_published"] == 0
+        assert advertiser_performance.json()["reach"] == 0
+
+        admin_performance = client.get("/api/v1/admin/performance/summary", headers=auth(admin_token))
+        assert admin_performance.status_code == 200, admin_performance.text
+        assert admin_performance.json()["campaigns_with_metrics"] == 0
