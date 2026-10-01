@@ -1,18 +1,54 @@
+import io
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .db import Base, SessionLocal, engine, get_db
 from .media import router as media_router
-from .models import AdvertisingPackage, AuditLog, Campaign, CampaignStatus, Payment, PaymentStatus, SystemSetting, User, UserRole
-from .schemas import AuthToken, CampaignCreate, CampaignDecision, CampaignOut, MetaIntegrationStatus, MetaIntegrationUpdate, PackageOut, PackageWrite, PaymentCreate, PaymentDecision, PaymentOut, UserLogin, UserOut, UserRegister
-from .security import create_access_token, decode_access_token, encrypt_secret, hash_password, verify_password
+from .meta_service import MetaError, publish_campaign as publish_to_meta, verify_page
+from .models import (
+    AdvertisingPackage,
+    AuditLog,
+    Campaign,
+    CampaignStatus,
+    Notification,
+    Payment,
+    PaymentStatus,
+    PublicationAttempt,
+    PublicationStatus,
+    SystemSetting,
+    User,
+    UserRole,
+)
+from .schemas import (
+    AuthToken,
+    CampaignCreate,
+    CampaignDecision,
+    CampaignOut,
+    MetaIntegrationStatus,
+    MetaIntegrationUpdate,
+    NotificationOut,
+    PackageOut,
+    PackageWrite,
+    PaymentCreate,
+    PaymentDecision,
+    PaymentOut,
+    PublicationOut,
+    PublishResult,
+    ReportSummary,
+    UserLogin,
+    UserOut,
+    UserRegister,
+)
+from .security import create_access_token, decode_access_token, decrypt_secret, encrypt_secret, hash_password, verify_password
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -40,13 +76,21 @@ def seed_data() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Alembic is the deployment migration mechanism. create_all is retained as a
+    # local/test safety net and is idempotent against an already migrated schema.
     Base.metadata.create_all(bind=engine)
     seed_data()
     yield
 
 
-app = FastAPI(title="Meloli Advertising API", version="0.5.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="Meloli Advertising API", version="1.0.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(media_router)
 
 
@@ -69,6 +113,12 @@ def staff_user(user: User = Depends(current_user)) -> User:
     return user
 
 
+def publisher_user(user: User = Depends(current_user)) -> User:
+    if user.role not in {UserRole.PUBLISHER, UserRole.SUPER_ADMIN}:
+        raise HTTPException(status_code=403, detail="Publisher or super admin access required")
+    return user
+
+
 def super_admin(user: User = Depends(current_user)) -> User:
     if user.role != UserRole.SUPER_ADMIN:
         raise HTTPException(status_code=403, detail="Super admin access required")
@@ -79,8 +129,24 @@ def audit(db: Session, actor: User | None, action: str, entity_type: str, entity
     db.add(AuditLog(actor_user_id=actor.id if actor else None, action=action, entity_type=entity_type, entity_id=str(entity_id) if entity_id is not None else None, detail=detail))
 
 
+def notify(db: Session, user_id: int, kind: str, title: str, message: str) -> None:
+    db.add(Notification(user_id=user_id, kind=kind, title=title, message=message))
+
+
 def get_setting(db: Session, key: str) -> SystemSetting | None:
     return db.scalar(select(SystemSetting).where(SystemSetting.key == key))
+
+
+def setting_value(db: Session, key: str) -> str | None:
+    item = get_setting(db, key)
+    return item.value if item and not item.encrypted else None
+
+
+def setting_secret(db: Session, key: str) -> str | None:
+    item = get_setting(db, key)
+    if not item or not item.value:
+        return None
+    return decrypt_secret(item.value) if item.encrypted else item.value
 
 
 def set_setting(db: Session, key: str, value: str | None, encrypted: bool = False) -> None:
@@ -94,22 +160,41 @@ def set_setting(db: Session, key: str, value: str | None, encrypted: bool = Fals
 
 
 def meta_status(db: Session) -> MetaIntegrationStatus:
-    def value(key: str) -> str | None:
-        item = get_setting(db, key)
-        return item.value if item and not item.encrypted else None
     def present(key: str) -> bool:
         item = get_setting(db, key)
         return bool(item and item.value)
+
     tracked = [get_setting(db, key) for key in ("meta.app_id", "meta.page_id", "meta.app_secret", "meta.page_access_token", "meta.webhook_verify_token")]
-    updated = [item.updated_at for item in tracked if item is not None]
-    app_id = value("meta.app_id")
-    page_id = value("meta.page_id")
-    return MetaIntegrationStatus(configured=bool(app_id and page_id and present("meta.page_access_token")), connected=value("meta.connected") == "true", app_id=app_id, page_id=page_id, webhook_callback_url=value("meta.webhook_callback_url"), graph_api_version=value("meta.graph_api_version"), app_secret_configured=present("meta.app_secret"), page_access_token_configured=present("meta.page_access_token"), webhook_verify_token_configured=present("meta.webhook_verify_token"), updated_at=max(updated) if updated else None)
+    updated = [item.updated_at for item in tracked if item is not None and item.updated_at is not None]
+    app_id = setting_value(db, "meta.app_id")
+    page_id = setting_value(db, "meta.page_id")
+    return MetaIntegrationStatus(
+        configured=bool(app_id and page_id and present("meta.page_access_token") and setting_value(db, "meta.graph_api_version")),
+        connected=setting_value(db, "meta.connected") == "true",
+        app_id=app_id,
+        page_id=page_id,
+        page_name=setting_value(db, "meta.page_name"),
+        webhook_callback_url=setting_value(db, "meta.webhook_callback_url"),
+        graph_api_version=setting_value(db, "meta.graph_api_version"),
+        app_secret_configured=present("meta.app_secret"),
+        page_access_token_configured=present("meta.page_access_token"),
+        webhook_verify_token_configured=present("meta.webhook_verify_token"),
+        updated_at=max(updated) if updated else None,
+    )
+
+
+def get_campaign_for_user(db: Session, campaign_id: int, user: User) -> Campaign:
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if user.role == UserRole.ADVERTISER and campaign.advertiser_id != user.id:
+        raise HTTPException(status_code=403, detail="You cannot access this campaign")
+    return campaign
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "meloli-api", "version": "0.5.0"}
+    return {"status": "ok", "service": "meloli-api", "version": "1.0.0"}
 
 
 @app.post("/api/v1/auth/register", response_model=AuthToken, status_code=201)
@@ -118,7 +203,11 @@ def register(payload: UserRegister, db: Session = Depends(get_db)):
     if db.scalar(select(User).where(User.email == email)):
         raise HTTPException(status_code=409, detail="An account already exists for this email")
     user = User(full_name=payload.full_name, business_name=payload.business_name, email=email, phone=payload.phone, password_hash=hash_password(payload.password), role=UserRole.ADVERTISER)
-    db.add(user); db.flush(); audit(db, user, "account.registered", "user", user.id); db.commit(); db.refresh(user)
+    db.add(user)
+    db.flush()
+    audit(db, user, "account.registered", "user", user.id)
+    db.commit()
+    db.refresh(user)
     return AuthToken(access_token=create_access_token(user.id, user.role.value), user=user)
 
 
@@ -153,7 +242,11 @@ def create_package(payload: PackageWrite, admin: User = Depends(super_admin), db
     if db.scalar(select(AdvertisingPackage).where(AdvertisingPackage.code == code)):
         raise HTTPException(status_code=409, detail="Package code already exists")
     package = AdvertisingPackage(code=code, name=payload.name, description=payload.description, price=payload.price, currency=payload.currency.upper(), posts_included=payload.posts_included, active=payload.active)
-    db.add(package); db.flush(); audit(db, admin, "package.created", "advertising_package", package.id, code); db.commit(); db.refresh(package)
+    db.add(package)
+    db.flush()
+    audit(db, admin, "package.created", "advertising_package", package.id, code)
+    db.commit()
+    db.refresh(package)
     return package
 
 
@@ -166,8 +259,16 @@ def update_package(package_id: int, payload: PackageWrite, admin: User = Depends
     duplicate = db.scalar(select(AdvertisingPackage).where(AdvertisingPackage.code == code, AdvertisingPackage.id != package_id))
     if duplicate:
         raise HTTPException(status_code=409, detail="Package code already exists")
-    package.code = code; package.name = payload.name; package.description = payload.description; package.price = payload.price; package.currency = payload.currency.upper(); package.posts_included = payload.posts_included; package.active = payload.active
-    audit(db, admin, "package.updated", "advertising_package", package.id, code); db.commit(); db.refresh(package)
+    package.code = code
+    package.name = payload.name
+    package.description = payload.description
+    package.price = payload.price
+    package.currency = payload.currency.upper()
+    package.posts_included = payload.posts_included
+    package.active = payload.active
+    audit(db, admin, "package.updated", "advertising_package", package.id, code)
+    db.commit()
+    db.refresh(package)
     return package
 
 
@@ -185,7 +286,11 @@ def create_campaign(payload: CampaignCreate, user: User = Depends(current_user),
     if not package:
         raise HTTPException(status_code=400, detail="Advertising package is unavailable")
     campaign = Campaign(advertiser_id=user.id, package_id=package.id, title=payload.title, caption=payload.caption, media_url=payload.media_url, destination_url=payload.destination_url, preferred_publish_at=payload.preferred_publish_at, status=CampaignStatus.PAYMENT_PENDING)
-    db.add(campaign); db.flush(); audit(db, user, "campaign.created", "campaign", campaign.id, f"Package {package.code}"); db.commit(); db.refresh(campaign)
+    db.add(campaign)
+    db.flush()
+    audit(db, user, "campaign.created", "campaign", campaign.id, f"Package {package.code}")
+    db.commit()
+    db.refresh(campaign)
     return campaign
 
 
@@ -201,35 +306,37 @@ def decide_campaign(campaign_id: int, payload: CampaignDecision, staff: User = D
         raise HTTPException(status_code=409, detail="Payment must be confirmed before editorial review")
     if payload.status == CampaignStatus.CHANGES_REQUESTED and not payload.reviewer_note:
         raise HTTPException(status_code=400, detail="A change request must include a reviewer note")
-    campaign.status = payload.status; campaign.reviewer_note = payload.reviewer_note
+    campaign.status = payload.status
+    campaign.reviewer_note = payload.reviewer_note
     if payload.status == CampaignStatus.SCHEDULED:
         if not payload.scheduled_publish_at:
             raise HTTPException(status_code=400, detail="Scheduled campaigns require a publishing date")
         campaign.scheduled_publish_at = payload.scheduled_publish_at
-    audit(db, staff, f"campaign.{payload.status.value}", "campaign", campaign.id, payload.reviewer_note); db.commit(); db.refresh(campaign)
+    notify(db, campaign.advertiser_id, "campaign_status", f"Campaign {payload.status.value.replace('_', ' ')}", payload.reviewer_note or f"{campaign.title} is now {payload.status.value.replace('_', ' ')}.")
+    audit(db, staff, f"campaign.{payload.status.value}", "campaign", campaign.id, payload.reviewer_note)
+    db.commit()
+    db.refresh(campaign)
     return campaign
 
 
 @app.get("/api/v1/campaigns/{campaign_id}/payments", response_model=list[PaymentOut])
 def list_payments(campaign_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    campaign = db.get(Campaign, campaign_id)
-    if not campaign:
-        raise HTTPException(status_code=404, detail="Campaign not found")
-    if user.role == UserRole.ADVERTISER and campaign.advertiser_id != user.id:
-        raise HTTPException(status_code=403, detail="You cannot access this campaign")
-    return list(db.scalars(select(Payment).where(Payment.campaign_id == campaign_id).order_by(Payment.created_at.desc())))
+    campaign = get_campaign_for_user(db, campaign_id, user)
+    return list(db.scalars(select(Payment).where(Payment.campaign_id == campaign.id).order_by(Payment.created_at.desc())))
 
 
 @app.post("/api/v1/campaigns/{campaign_id}/payments", response_model=PaymentOut, status_code=201)
 def create_payment(campaign_id: int, payload: PaymentCreate, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    campaign = db.get(Campaign, campaign_id)
-    if not campaign:
-        raise HTTPException(status_code=404, detail="Campaign not found")
-    if user.role == UserRole.ADVERTISER and campaign.advertiser_id != user.id:
-        raise HTTPException(status_code=403, detail="You cannot pay for this campaign")
+    campaign = get_campaign_for_user(db, campaign_id, user)
     package = db.get(AdvertisingPackage, campaign.package_id)
+    if not package:
+        raise HTTPException(status_code=409, detail="Campaign package no longer exists")
     payment = Payment(campaign_id=campaign.id, amount=package.price, currency=package.currency, method=payload.method, reference=payload.reference, status=PaymentStatus.PENDING)
-    db.add(payment); db.flush(); audit(db, user, "payment.created", "payment", payment.id, f"Campaign {campaign.id}"); db.commit(); db.refresh(payment)
+    db.add(payment)
+    db.flush()
+    audit(db, user, "payment.created", "payment", payment.id, f"Campaign {campaign.id}")
+    db.commit()
+    db.refresh(payment)
     return payment
 
 
@@ -241,13 +348,146 @@ def decide_payment(payment_id: int, payload: PaymentDecision, staff: User = Depe
     payment.status = payload.status
     if payload.reference is not None:
         payment.reference = payload.reference
+    campaign = db.get(Campaign, payment.campaign_id)
     if payload.status == PaymentStatus.PAID:
         payment.paid_at = datetime.now(timezone.utc)
-        campaign = db.get(Campaign, payment.campaign_id)
         if campaign and campaign.status == CampaignStatus.PAYMENT_PENDING:
             campaign.status = CampaignStatus.SUBMITTED
-    audit(db, staff, f"payment.{payload.status.value}", "payment", payment.id, payment.reference); db.commit(); db.refresh(payment)
+        if campaign:
+            notify(db, campaign.advertiser_id, "payment", "Payment confirmed", f"Payment for {campaign.title} has been confirmed and the advert is ready for review.")
+    elif campaign:
+        notify(db, campaign.advertiser_id, "payment", f"Payment {payload.status.value}", f"Payment for {campaign.title} is marked {payload.status.value}.")
+    audit(db, staff, f"payment.{payload.status.value}", "payment", payment.id, payment.reference)
+    db.commit()
+    db.refresh(payment)
     return payment
+
+
+@app.get("/api/v1/payments/{payment_id}/receipt.pdf")
+def payment_receipt(payment_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    payment = db.get(Payment, payment_id)
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    campaign = get_campaign_for_user(db, payment.campaign_id, user)
+    if payment.status != PaymentStatus.PAID:
+        raise HTTPException(status_code=409, detail="A receipt is available only after payment is confirmed")
+    advertiser = db.get(User, campaign.advertiser_id)
+    package = db.get(AdvertisingPackage, campaign.package_id)
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    pdf.setTitle(f"Meloli Receipt {payment.id}")
+    pdf.setFont("Helvetica-Bold", 18)
+    pdf.drawString(48, height - 64, "MELOLI AIRWAVES MEDIA")
+    pdf.setFont("Helvetica", 10)
+    pdf.drawString(48, height - 82, "Advertising payment receipt")
+    pdf.line(48, height - 96, width - 48, height - 96)
+    rows = [
+        ("Receipt no.", f"MEL-{payment.id:06d}"),
+        ("Campaign", campaign.title),
+        ("Advertiser", advertiser.business_name or advertiser.full_name if advertiser else f"Advertiser {campaign.advertiser_id}"),
+        ("Package", package.name if package else f"Package {campaign.package_id}"),
+        ("Payment method", payment.method),
+        ("Reference", payment.reference or "—"),
+        ("Amount", f"{payment.currency} {float(payment.amount):,.2f}"),
+        ("Paid at", payment.paid_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if payment.paid_at else "—"),
+    ]
+    y = height - 130
+    for label, value in rows:
+        pdf.setFont("Helvetica-Bold", 10)
+        pdf.drawString(48, y, label)
+        pdf.setFont("Helvetica", 10)
+        pdf.drawString(165, y, str(value)[:78])
+        y -= 24
+    pdf.setFont("Helvetica", 9)
+    pdf.drawString(48, 52, "Generated by the Meloli Airwaves Advertising Portal.")
+    pdf.save()
+    data = buffer.getvalue()
+    audit(db, user, "receipt.generated", "payment", payment.id)
+    db.commit()
+    return Response(data, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="meloli-receipt-{payment.id}.pdf"'})
+
+
+@app.get("/api/v1/notifications", response_model=list[NotificationOut])
+def list_notifications(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return list(db.scalars(select(Notification).where(Notification.user_id == user.id).order_by(Notification.created_at.desc()).limit(100)))
+
+
+@app.post("/api/v1/notifications/{notification_id}/read", response_model=NotificationOut)
+def mark_notification_read(notification_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    notification = db.get(Notification, notification_id)
+    if not notification or notification.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    notification.read_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(notification)
+    return notification
+
+
+@app.get("/api/v1/admin/reports/summary", response_model=ReportSummary)
+def report_summary(_: User = Depends(staff_user), db: Session = Depends(get_db)):
+    advertisers = db.scalar(select(func.count(User.id)).where(User.role == UserRole.ADVERTISER)) or 0
+    campaigns = db.scalar(select(func.count(Campaign.id))) or 0
+    awaiting_review = db.scalar(select(func.count(Campaign.id)).where(Campaign.status.in_([CampaignStatus.SUBMITTED, CampaignStatus.IN_REVIEW]))) or 0
+    scheduled = db.scalar(select(func.count(Campaign.id)).where(Campaign.status == CampaignStatus.SCHEDULED)) or 0
+    published = db.scalar(select(func.count(Campaign.id)).where(Campaign.status == CampaignStatus.PUBLISHED)) or 0
+    paid_payments = db.scalar(select(func.count(Payment.id)).where(Payment.status == PaymentStatus.PAID)) or 0
+    revenue = db.scalar(select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.status == PaymentStatus.PAID)) or 0
+    failed_publications = db.scalar(select(func.count(PublicationAttempt.id)).where(PublicationAttempt.status == PublicationStatus.FAILED)) or 0
+    return ReportSummary(advertisers=advertisers, campaigns=campaigns, awaiting_review=awaiting_review, scheduled=scheduled, published=published, paid_payments=paid_payments, revenue=float(revenue), failed_publications=failed_publications)
+
+
+@app.get("/api/v1/publications", response_model=list[PublicationOut])
+def list_publications(_: User = Depends(staff_user), db: Session = Depends(get_db)):
+    return list(db.scalars(select(PublicationAttempt).order_by(PublicationAttempt.created_at.desc()).limit(200)))
+
+
+@app.post("/api/v1/campaigns/{campaign_id}/publish", response_model=PublishResult)
+def publish_campaign(campaign_id: int, publisher: User = Depends(publisher_user), db: Session = Depends(get_db)):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.status not in {CampaignStatus.APPROVED, CampaignStatus.SCHEDULED}:
+        raise HTTPException(status_code=409, detail="Only approved or scheduled campaigns can be published")
+    if campaign.facebook_post_id:
+        raise HTTPException(status_code=409, detail="Campaign has already been published")
+
+    page_id = setting_value(db, "meta.page_id")
+    token = setting_secret(db, "meta.page_access_token")
+    version = setting_value(db, "meta.graph_api_version")
+    if not page_id or not token or not version:
+        raise HTTPException(status_code=409, detail="Meta publishing is not fully configured in System Configuration")
+
+    previous = db.scalar(select(func.count(PublicationAttempt.id)).where(PublicationAttempt.campaign_id == campaign.id)) or 0
+    attempt = PublicationAttempt(campaign_id=campaign.id, attempt_number=int(previous) + 1, status=PublicationStatus.PENDING)
+    db.add(attempt)
+    db.flush()
+    try:
+        result = publish_to_meta(page_id=page_id, access_token=token, version=version, message=campaign.caption, media_url=campaign.media_url, destination_url=campaign.destination_url)
+        attempt.status = PublicationStatus.PUBLISHED
+        attempt.external_post_id = result.post_id
+        attempt.external_post_url = result.post_url
+        campaign.facebook_post_id = result.post_id
+        campaign.facebook_post_url = result.post_url
+        campaign.published_at = datetime.now(timezone.utc)
+        campaign.status = CampaignStatus.PUBLISHED
+        notify(db, campaign.advertiser_id, "published", "Your advert is live", f"{campaign.title} has been published on the Meloli Airwaves Facebook Page.")
+        audit(db, publisher, "campaign.published", "campaign", campaign.id, result.post_id)
+        db.commit()
+        db.refresh(campaign)
+        db.refresh(attempt)
+        return PublishResult(campaign=campaign, publication=attempt)
+    except MetaError as exc:
+        attempt.status = PublicationStatus.FAILED
+        attempt.error_message = str(exc)[:4000]
+        audit(db, publisher, "campaign.publish_failed", "campaign", campaign.id, str(exc))
+        db.commit()
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/campaigns/{campaign_id}/publish/retry", response_model=PublishResult)
+def retry_publish_campaign(campaign_id: int, publisher: User = Depends(publisher_user), db: Session = Depends(get_db)):
+    return publish_campaign(campaign_id=campaign_id, publisher=publisher, db=db)
 
 
 @app.get("/api/v1/system/integrations/meta", response_model=MetaIntegrationStatus)
@@ -257,14 +497,39 @@ def get_meta_integration(_: User = Depends(super_admin), db: Session = Depends(g
 
 @app.put("/api/v1/system/integrations/meta", response_model=MetaIntegrationStatus)
 def update_meta_integration(payload: MetaIntegrationUpdate, admin: User = Depends(super_admin), db: Session = Depends(get_db)):
-    set_setting(db, "meta.app_id", payload.app_id); set_setting(db, "meta.page_id", payload.page_id); set_setting(db, "meta.webhook_callback_url", payload.webhook_callback_url); set_setting(db, "meta.graph_api_version", payload.graph_api_version)
-    if payload.app_secret is not None: set_setting(db, "meta.app_secret", payload.app_secret.get_secret_value(), encrypted=True)
-    if payload.page_access_token is not None: set_setting(db, "meta.page_access_token", payload.page_access_token.get_secret_value(), encrypted=True)
-    if payload.webhook_verify_token is not None: set_setting(db, "meta.webhook_verify_token", payload.webhook_verify_token.get_secret_value(), encrypted=True)
-    set_setting(db, "meta.connected", "false"); audit(db, admin, "meta.configuration.updated", "system_setting", detail="Meta integration configuration changed"); db.commit()
+    set_setting(db, "meta.app_id", payload.app_id)
+    set_setting(db, "meta.page_id", payload.page_id)
+    set_setting(db, "meta.webhook_callback_url", payload.webhook_callback_url)
+    set_setting(db, "meta.graph_api_version", payload.graph_api_version)
+    if payload.app_secret is not None:
+        set_setting(db, "meta.app_secret", payload.app_secret.get_secret_value(), encrypted=True)
+    if payload.page_access_token is not None:
+        set_setting(db, "meta.page_access_token", payload.page_access_token.get_secret_value(), encrypted=True)
+    if payload.webhook_verify_token is not None:
+        set_setting(db, "meta.webhook_verify_token", payload.webhook_verify_token.get_secret_value(), encrypted=True)
+    set_setting(db, "meta.connected", "false")
+    set_setting(db, "meta.page_name", None)
+    audit(db, admin, "meta.configuration.updated", "system_setting", detail="Meta integration configuration changed")
+    db.commit()
     return meta_status(db)
 
 
 @app.post("/api/v1/system/integrations/meta/test", response_model=MetaIntegrationStatus)
-def test_meta_integration(_: User = Depends(super_admin), db: Session = Depends(get_db)):
-    set_setting(db, "meta.connected", "false"); db.commit(); return meta_status(db)
+def test_meta_integration(admin: User = Depends(super_admin), db: Session = Depends(get_db)):
+    page_id = setting_value(db, "meta.page_id")
+    token = setting_secret(db, "meta.page_access_token")
+    version = setting_value(db, "meta.graph_api_version")
+    if not page_id or not token or not version:
+        raise HTTPException(status_code=409, detail="Page ID, Page access token and Graph API version are required")
+    try:
+        page = verify_page(page_id, token, version)
+    except MetaError as exc:
+        set_setting(db, "meta.connected", "false")
+        audit(db, admin, "meta.connection_failed", "system_setting", detail=str(exc))
+        db.commit()
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    set_setting(db, "meta.connected", "true")
+    set_setting(db, "meta.page_name", page.name)
+    audit(db, admin, "meta.connection_verified", "system_setting", detail=f"{page.name} ({page.id})")
+    db.commit()
+    return meta_status(db)
