@@ -1,70 +1,40 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowLeft, CheckCircle2, Eye, EyeOff, Facebook, KeyRound, LockKeyhole, Save, Settings2, ShieldCheck } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { ArrowLeft, CheckCircle2, Eye, EyeOff, Facebook, KeyRound, Loader2, LockKeyhole, Save, Settings2, ShieldCheck } from "lucide-react";
+import { api, getSessionUser } from "@/lib/api";
+
+type MetaStatus={configured:boolean;connected:boolean;app_id?:string|null;page_id?:string|null;webhook_callback_url?:string|null;graph_api_version?:string|null;app_secret_configured:boolean;page_access_token_configured:boolean;webhook_verify_token_configured:boolean;updated_at?:string|null};
 
 export default function SettingsPage() {
-  const [showSecrets, setShowSecrets] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const router=useRouter();
+  const [showSecrets,setShowSecrets]=useState(false);
+  const [statusInfo,setStatusInfo]=useState<MetaStatus|null>(null);
+  const [form,setForm]=useState({app_id:"",app_secret:"",page_id:"",page_access_token:"",webhook_verify_token:"",webhook_callback_url:"",graph_api_version:""});
+  const [busy,setBusy]=useState(false); const [message,setMessage]=useState(""); const [error,setError]=useState("");
 
-  function save() {
-    setSaved(true);
-    window.setTimeout(() => setSaved(false), 2200);
-  }
+  useEffect(()=>{const user=getSessionUser();if(!user||user.role!=="super_admin"){router.replace("/login");return;}api<MetaStatus>("/api/v1/system/integrations/meta",{},true).then(s=>{setStatusInfo(s);setForm(v=>({...v,app_id:s.app_id||"",page_id:s.page_id||"",webhook_callback_url:s.webhook_callback_url||"",graph_api_version:s.graph_api_version||""}));}).catch(e=>setError(e.message));},[router]);
+  const change=(key:string,value:string)=>setForm(v=>({...v,[key]:value}));
+
+  async function save(){setBusy(true);setError("");setMessage("");try{const payload:any={app_id:form.app_id,page_id:form.page_id,webhook_callback_url:form.webhook_callback_url||null,graph_api_version:form.graph_api_version||null};if(form.app_secret)payload.app_secret=form.app_secret;if(form.page_access_token)payload.page_access_token=form.page_access_token;if(form.webhook_verify_token)payload.webhook_verify_token=form.webhook_verify_token;const s=await api<MetaStatus>("/api/v1/system/integrations/meta",{method:"PUT",body:JSON.stringify(payload)},true);setStatusInfo(s);setForm(v=>({...v,app_secret:"",page_access_token:"",webhook_verify_token:""}));setMessage("Meta configuration saved securely.");}catch(e){setError(e instanceof Error?e.message:"Save failed");}finally{setBusy(false);}}
+  async function testConnection(){setBusy(true);setError("");setMessage("");try{const s=await api<MetaStatus>("/api/v1/system/integrations/meta/test",{method:"POST"},true);setStatusInfo(s);setMessage(s.connected?"Connection verified.":"Credentials are saved. Live Meta verification will be enabled with the publishing connector.");}catch(e){setError(e instanceof Error?e.message:"Connection test failed");}finally{setBusy(false);}}
 
   return <main className="min-h-screen bg-[#f5f6fa] text-slate-900">
-    <header className="sticky top-0 z-20 border-b border-slate-200/80 bg-white/90 backdrop-blur-xl">
-      <div className="mx-auto flex h-20 max-w-[1500px] items-center gap-4 px-4 sm:px-6 lg:px-8">
-        <Link href="/dashboard" className="grid h-10 w-10 place-items-center rounded-xl border border-slate-200 text-[#070a45]"><ArrowLeft size={18}/></Link>
-        <div className="min-w-0 flex-1"><h1 className="truncate text-lg font-black text-[#070a45]">System Configuration</h1><p className="hidden text-xs text-slate-500 sm:block">Manage publishing integrations and protected platform credentials</p></div>
-        <button onClick={save} className="flex items-center gap-2 rounded-xl bg-[#e31545] px-4 py-3 text-sm font-extrabold text-white"><Save size={17}/><span className="hidden sm:inline">Save changes</span></button>
-      </div>
-    </header>
-
-    <div className="mx-auto grid max-w-[1500px] gap-6 p-4 sm:p-6 lg:grid-cols-[270px_1fr] lg:p-8">
-      <aside className="h-fit rounded-[1.5rem] border border-slate-200 bg-white p-3">
-        <button className="flex w-full items-center gap-3 rounded-xl bg-[#070a45] px-4 py-3 text-left text-sm font-extrabold text-white"><Facebook size={18}/> Facebook / Meta</button>
-        <button className="mt-1 flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-bold text-slate-500 hover:bg-slate-50"><Settings2 size={18}/> General settings</button>
-        <button className="mt-1 flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-bold text-slate-500 hover:bg-slate-50"><ShieldCheck size={18}/> Security & audit</button>
-      </aside>
-
-      <section className="space-y-6">
-        <div className="rounded-[1.75rem] bg-[#070a45] p-6 text-white sm:p-8">
-          <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-xs font-black uppercase tracking-[.2em] text-white/50">Publishing integration</p><h2 className="mt-2 text-3xl font-black tracking-tight">Facebook Page connection</h2><p className="mt-3 max-w-2xl text-sm leading-6 text-white/60">Credentials entered here are handled by the backend. Secret values are write-only and are never displayed again after saving.</p></div><div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs font-extrabold text-white/70"><span className="h-2.5 w-2.5 rounded-full bg-amber-400"/> Not connected</div></div>
+    <header className="sticky top-0 z-20 border-b border-slate-200/80 bg-white/90 backdrop-blur-xl"><div className="mx-auto flex h-20 max-w-[1500px] items-center gap-4 px-4 sm:px-6 lg:px-8"><Link href="/dashboard" className="grid h-10 w-10 place-items-center rounded-xl border border-slate-200 text-[#070a45]"><ArrowLeft size={18}/></Link><div className="min-w-0 flex-1"><h1 className="truncate text-lg font-black text-[#070a45]">System Configuration</h1><p className="hidden text-xs text-slate-500 sm:block">Manage publishing integrations and protected platform credentials</p></div><button disabled={busy} onClick={save} className="flex items-center gap-2 rounded-xl bg-[#e31545] px-4 py-3 text-sm font-extrabold text-white disabled:opacity-50">{busy?<Loader2 size={17} className="animate-spin"/>:<Save size={17}/>}<span className="hidden sm:inline">Save changes</span></button></div></header>
+    <div className="mx-auto grid max-w-[1500px] gap-6 p-4 sm:p-6 lg:grid-cols-[270px_1fr] lg:p-8"><aside className="h-fit rounded-[1.5rem] border border-slate-200 bg-white p-3"><button className="flex w-full items-center gap-3 rounded-xl bg-[#070a45] px-4 py-3 text-left text-sm font-extrabold text-white"><Facebook size={18}/> Facebook / Meta</button><button className="mt-1 flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-bold text-slate-500"><Settings2 size={18}/> General settings</button><button className="mt-1 flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-bold text-slate-500"><ShieldCheck size={18}/> Security & audit</button></aside>
+      <section className="space-y-6"><div className="rounded-[1.75rem] bg-[#070a45] p-6 text-white sm:p-8"><div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-xs font-black uppercase tracking-[.2em] text-white/50">Publishing integration</p><h2 className="mt-2 text-3xl font-black tracking-tight">Facebook Page connection</h2><p className="mt-3 max-w-2xl text-sm leading-6 text-white/60">Stored secret values never return to this browser. To rotate one, enter only the replacement value and save.</p></div><div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs font-extrabold text-white/70"><span className={`h-2.5 w-2.5 rounded-full ${statusInfo?.connected?"bg-emerald-400":"bg-amber-400"}`}/>{statusInfo?.connected?"Connected":statusInfo?.configured?"Configured, not verified":"Not configured"}</div></div></div>
+        <div className="rounded-[1.6rem] border border-slate-200 bg-white p-5 sm:p-7"><div className="mb-6 flex items-start gap-4"><div className="grid h-12 w-12 place-items-center rounded-2xl bg-blue-50 text-blue-600"><Facebook size={22}/></div><div><h3 className="font-black text-[#070a45]">Meta application credentials</h3><p className="mt-1 text-sm leading-6 text-slate-500">Configure the Meta app and Meloli Airwaves Page used for approved publishing.</p></div></div>
+          <div className="grid gap-5 md:grid-cols-2"><Field label="Meta App ID" value={form.app_id} onChange={v=>change("app_id",v)} placeholder="Enter Meta App ID"/><SecretField label="Meta App Secret" value={form.app_secret} onChange={v=>change("app_secret",v)} placeholder={statusInfo?.app_secret_configured?"Stored securely — enter to replace":"Enter app secret"} show={showSecrets}/><Field label="Facebook Page ID" value={form.page_id} onChange={v=>change("page_id",v)} placeholder="Enter Meloli Page ID"/><Field label="Graph API version" value={form.graph_api_version} onChange={v=>change("graph_api_version",v)} placeholder="e.g. vXX.X"/><div className="md:col-span-2"><SecretField label="Page access token" value={form.page_access_token} onChange={v=>change("page_access_token",v)} placeholder={statusInfo?.page_access_token_configured?"Stored securely — enter to replace":"Enter Page access token"} show={showSecrets}/></div><SecretField label="Webhook verify token" value={form.webhook_verify_token} onChange={v=>change("webhook_verify_token",v)} placeholder={statusInfo?.webhook_verify_token_configured?"Stored securely — enter to replace":"Enter verify token"} show={showSecrets}/><Field label="Webhook callback URL" value={form.webhook_callback_url} onChange={v=>change("webhook_callback_url",v)} placeholder="https://your-domain/api/v1/meta/webhook"/></div>
+          <div className="mt-6 flex flex-col gap-3 border-t border-slate-100 pt-6 sm:flex-row sm:items-center sm:justify-between"><button onClick={()=>setShowSecrets(v=>!v)} className="flex items-center gap-2 text-sm font-extrabold text-slate-600">{showSecrets?<EyeOff size={17}/>:<Eye size={17}/>} {showSecrets?"Hide entered secrets":"Show entered secrets"}</button><div className="flex gap-2"><button disabled={busy} onClick={testConnection} className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-extrabold text-[#070a45] disabled:opacity-50">Test connection</button><button disabled={busy} onClick={save} className="rounded-xl bg-[#e31545] px-4 py-3 text-sm font-extrabold text-white disabled:opacity-50">Save integration</button></div></div>
         </div>
-
-        <div className="rounded-[1.6rem] border border-slate-200 bg-white p-5 sm:p-7">
-          <div className="mb-6 flex items-start gap-4"><div className="grid h-12 w-12 place-items-center rounded-2xl bg-blue-50 text-blue-600"><Facebook size={22}/></div><div><h3 className="font-black text-[#070a45]">Meta application credentials</h3><p className="mt-1 text-sm leading-6 text-slate-500">Configure the Meta app and Meloli Airwaves Page used for approved publishing.</p></div></div>
-
-          <div className="grid gap-5 md:grid-cols-2">
-            <Field label="Meta App ID" placeholder="Enter Meta App ID" />
-            <SecretField label="Meta App Secret" placeholder="Enter new app secret" show={showSecrets}/>
-            <Field label="Facebook Page ID" placeholder="Enter Meloli Page ID" />
-            <Field label="Graph API version" placeholder="e.g. vXX.X" />
-            <div className="md:col-span-2"><SecretField label="Page access token" placeholder="Enter or replace Page access token" show={showSecrets}/></div>
-            <SecretField label="Webhook verify token" placeholder="Create a secure verify token" show={showSecrets}/>
-            <Field label="Webhook callback URL" placeholder="https://your-domain/api/v1/meta/webhook" />
-          </div>
-
-          <div className="mt-6 flex flex-col gap-3 border-t border-slate-100 pt-6 sm:flex-row sm:items-center sm:justify-between">
-            <button onClick={()=>setShowSecrets(v=>!v)} className="flex items-center gap-2 text-sm font-extrabold text-slate-600">{showSecrets?<EyeOff size={17}/>:<Eye size={17}/>} {showSecrets?"Hide entered secrets":"Show entered secrets"}</button>
-            <div className="flex flex-col gap-2 sm:flex-row"><button className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-extrabold text-[#070a45]">Test connection</button><button onClick={save} className="rounded-xl bg-[#e31545] px-4 py-3 text-sm font-extrabold text-white">Save integration</button></div>
-          </div>
-        </div>
-
-        <div className="grid gap-4 md:grid-cols-3">
-          <Info icon={<LockKeyhole/>} title="Secrets stay server-side" text="The browser never receives stored app secrets or access tokens after they are saved."/>
-          <Info icon={<KeyRound/>} title="Replace without revealing" text="Admins can rotate a credential by entering a replacement; the existing secret remains masked."/>
-          <Info icon={<ShieldCheck/>} title="Admin controlled" text="Only authorized Meloli system administrators should be allowed to change publishing credentials."/>
-        </div>
-
-        {saved&&<div className="fixed bottom-5 right-5 flex items-center gap-3 rounded-2xl bg-[#070a45] px-5 py-4 text-sm font-extrabold text-white shadow-2xl"><CheckCircle2 size={19} className="text-emerald-400"/> Configuration changes prepared</div>}
-      </section>
-    </div>
-  </main>
+        {(message||error)&&<div className={`flex items-center gap-3 rounded-2xl border px-5 py-4 text-sm font-extrabold ${error?"border-rose-200 bg-rose-50 text-rose-700":"border-emerald-200 bg-emerald-50 text-emerald-700"}`}><CheckCircle2 size={19}/>{error||message}</div>}
+        <div className="grid gap-4 md:grid-cols-3"><Info icon={<LockKeyhole/>} title="Secrets stay server-side" text="Saved app secrets and access tokens are encrypted before database storage."/><Info icon={<KeyRound/>} title="Replace without revealing" text="The dashboard only reports whether each secret exists; it never reads the saved value."/><Info icon={<ShieldCheck/>} title="Super Admin controlled" text="The backend protects this configuration with the super-admin role."/></div>
+      </section></div>
+  </main>;
 }
 
-function Field({label,placeholder}:{label:string;placeholder:string}){return <label className="block"><span className="mb-2 block text-xs font-black uppercase tracking-[.08em] text-slate-500">{label}</span><input className="h-12 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 text-sm font-semibold outline-none transition focus:border-[#070a45] focus:bg-white" placeholder={placeholder}/></label>}
-function SecretField({label,placeholder,show}:{label:string;placeholder:string;show:boolean}){return <label className="block"><span className="mb-2 flex items-center gap-2 text-xs font-black uppercase tracking-[.08em] text-slate-500">{label}<LockKeyhole size={13}/></span><input type={show?"text":"password"} autoComplete="new-password" className="h-12 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 text-sm font-semibold outline-none transition focus:border-[#070a45] focus:bg-white" placeholder={placeholder}/></label>}
+function Field({label,placeholder,value,onChange}:{label:string;placeholder:string;value:string;onChange:(v:string)=>void}){return <label className="block"><span className="mb-2 block text-xs font-black uppercase tracking-[.08em] text-slate-500">{label}</span><input value={value} onChange={e=>onChange(e.target.value)} className="h-12 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 text-sm font-semibold outline-none focus:border-[#070a45] focus:bg-white" placeholder={placeholder}/></label>}
+function SecretField({label,placeholder,show,value,onChange}:{label:string;placeholder:string;show:boolean;value:string;onChange:(v:string)=>void}){return <label className="block"><span className="mb-2 flex items-center gap-2 text-xs font-black uppercase tracking-[.08em] text-slate-500">{label}<LockKeyhole size={13}/></span><input value={value} onChange={e=>onChange(e.target.value)} type={show?"text":"password"} autoComplete="new-password" className="h-12 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 text-sm font-semibold outline-none focus:border-[#070a45] focus:bg-white" placeholder={placeholder}/></label>}
 function Info({icon,title,text}:{icon:React.ReactNode;title:string;text:string}){return <div className="rounded-[1.35rem] border border-slate-200 bg-white p-5"><div className="mb-4 grid h-10 w-10 place-items-center rounded-xl bg-[#070a45]/5 text-[#070a45] [&>svg]:h-5 [&>svg]:w-5">{icon}</div><h4 className="font-black text-[#070a45]">{title}</h4><p className="mt-2 text-sm leading-6 text-slate-500">{text}</p></div>}
