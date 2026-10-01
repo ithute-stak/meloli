@@ -1,14 +1,97 @@
 # Meloli Airwaves Advertising Portal
 
-Digital advertising workflow for Meloli Airwaves Media.
-
-This repository is being built as a responsive client-to-publisher advertising platform: clients submit paid advertising content, Meloli reviews and approves it, and approved content is prepared for publication to Meloli's connected social channels.
+A responsive client-to-publisher advertising platform for Meloli Airwaves Media. Advertisers register, create campaigns, upload artwork or video, submit payment details and track editorial decisions. Meloli staff verify payments, review content, request changes, approve and schedule campaigns, then publish approved adverts to the configured Meloli Facebook Page.
 
 ## Stack
 
-- Next.js 16 + React 19 + TypeScript
-- Tailwind CSS 4
+- Next.js 16 + React 19 + TypeScript + Tailwind CSS 4
 - FastAPI + SQLAlchemy + PostgreSQL
+- Alembic database migrations
 - Docker / Docker Compose
+- Meta Graph API integration configured from the dashboard
 
-The architecture intentionally follows the modern patterns already used across Ithute and LoanHub.
+The architecture follows the modern patterns used across Ithute and LoanHub.
+
+## Roles
+
+- `advertiser` — owns campaigns and payment records
+- `reviewer` — reviews paid campaigns and requests changes/approves
+- `publisher` — can publish approved campaigns to Facebook
+- `super_admin` — full operational access plus packages and system configuration
+
+## Core workflow
+
+`Payment pending → Submitted → In review → Changes requested / Approved → Scheduled → Published`
+
+Nothing is sent to Facebook before Meloli staff approval.
+
+## Local development
+
+1. Copy `.env.example` to `.env` and replace all example secrets.
+2. Start the stack:
+
+```bash
+docker compose up --build
+```
+
+3. Frontend: `http://localhost:3000`
+4. Backend API: `http://localhost:8000`
+5. API health: `http://localhost:8000/health`
+
+The backend runs `alembic upgrade head` before starting Uvicorn. Uploaded campaign media is stored in the `meloli_media` Docker volume and PostgreSQL data in `meloli_db`.
+
+## Facebook / Meta configuration
+
+Meta credentials are not hard-coded. Sign in as Super Admin and open **Settings → Facebook / Meta**. Configure:
+
+- Meta App ID
+- Meta App Secret
+- Facebook Page ID
+- Page access token
+- Graph API version
+- webhook verify token and callback URL when webhooks are needed
+
+Secrets are encrypted before database storage and are never returned to the browser after saving. Use **Test connection** to verify Page access. `PUBLIC_BACKEND_URL` must be a publicly reachable HTTPS backend URL before Meta can fetch media uploaded to the Meloli server.
+
+The Meta app and Page must have whatever permissions and review status Meta currently requires for Page publishing. These requirements are controlled by Meta and should be confirmed when the production app is created.
+
+## Payments
+
+V1 supports traceable manual/offline payment submissions and Meloli verification. Payment confirmation automatically moves a campaign into the editorial queue. The payment model is designed so an external payment gateway can be added without changing the campaign workflow.
+
+Confirmed payments expose a PDF receipt endpoint. Advertisers can only access receipts and payment records for their own campaigns.
+
+## Testing and CI
+
+GitHub Actions runs:
+
+- backend smoke tests using an isolated SQLite test database
+- frontend TypeScript checks
+- production frontend build
+
+Run backend tests locally:
+
+```bash
+cd apps/backend
+PYTHONPATH=. pytest -q
+```
+
+Run frontend validation:
+
+```bash
+cd apps/frontend
+corepack enable
+pnpm install
+pnpm typecheck
+pnpm build
+```
+
+## Production checklist
+
+- Use strong independent `JWT_SECRET` and `SETTINGS_ENCRYPTION_KEY` values.
+- Set `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` only through deployment secrets.
+- Set production `CORS_ORIGINS`, `NEXT_PUBLIC_API_URL` and `PUBLIC_BACKEND_URL`.
+- Put the frontend and backend behind HTTPS.
+- Configure backups for PostgreSQL and the media volume.
+- Configure and verify the production Meta app/Page integration from the dashboard.
+- Run CI and device QA before merging/deploying a release.
