@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from .db import Base, SessionLocal, engine, get_db
 from .models import AdvertisingPackage, AuditLog, Campaign, CampaignStatus, Payment, PaymentStatus, SystemSetting, User, UserRole
-from .schemas import AuthToken, CampaignCreate, CampaignDecision, CampaignOut, MetaIntegrationStatus, MetaIntegrationUpdate, PackageOut, PaymentCreate, PaymentDecision, PaymentOut, UserLogin, UserOut, UserRegister
+from .schemas import AuthToken, CampaignCreate, CampaignDecision, CampaignOut, MetaIntegrationStatus, MetaIntegrationUpdate, PackageOut, PackageWrite, PaymentCreate, PaymentDecision, PaymentOut, UserLogin, UserOut, UserRegister
 from .security import create_access_token, decode_access_token, encrypt_secret, hash_password, verify_password
 
 bearer = HTTPBearer(auto_error=False)
@@ -44,7 +44,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Meloli Advertising API", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="Meloli Advertising API", version="0.5.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 
@@ -107,7 +107,7 @@ def meta_status(db: Session) -> MetaIntegrationStatus:
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "meloli-api", "version": "0.4.0"}
+    return {"status": "ok", "service": "meloli-api", "version": "0.5.0"}
 
 
 @app.post("/api/v1/auth/register", response_model=AuthToken, status_code=201)
@@ -138,6 +138,35 @@ def me(user: User = Depends(current_user)):
 @app.get("/api/v1/packages", response_model=list[PackageOut])
 def list_packages(db: Session = Depends(get_db)):
     return list(db.scalars(select(AdvertisingPackage).where(AdvertisingPackage.active.is_(True)).order_by(AdvertisingPackage.price)))
+
+
+@app.get("/api/v1/admin/packages", response_model=list[PackageOut])
+def list_admin_packages(_: User = Depends(super_admin), db: Session = Depends(get_db)):
+    return list(db.scalars(select(AdvertisingPackage).order_by(AdvertisingPackage.active.desc(), AdvertisingPackage.price)))
+
+
+@app.post("/api/v1/admin/packages", response_model=PackageOut, status_code=201)
+def create_package(payload: PackageWrite, admin: User = Depends(super_admin), db: Session = Depends(get_db)):
+    code = payload.code.upper().strip()
+    if db.scalar(select(AdvertisingPackage).where(AdvertisingPackage.code == code)):
+        raise HTTPException(status_code=409, detail="Package code already exists")
+    package = AdvertisingPackage(code=code, name=payload.name, description=payload.description, price=payload.price, currency=payload.currency.upper(), posts_included=payload.posts_included, active=payload.active)
+    db.add(package); db.flush(); audit(db, admin, "package.created", "advertising_package", package.id, code); db.commit(); db.refresh(package)
+    return package
+
+
+@app.put("/api/v1/admin/packages/{package_id}", response_model=PackageOut)
+def update_package(package_id: int, payload: PackageWrite, admin: User = Depends(super_admin), db: Session = Depends(get_db)):
+    package = db.get(AdvertisingPackage, package_id)
+    if not package:
+        raise HTTPException(status_code=404, detail="Package not found")
+    code = payload.code.upper().strip()
+    duplicate = db.scalar(select(AdvertisingPackage).where(AdvertisingPackage.code == code, AdvertisingPackage.id != package_id))
+    if duplicate:
+        raise HTTPException(status_code=409, detail="Package code already exists")
+    package.code = code; package.name = payload.name; package.description = payload.description; package.price = payload.price; package.currency = payload.currency.upper(); package.posts_included = payload.posts_included; package.active = payload.active
+    audit(db, admin, "package.updated", "advertising_package", package.id, code); db.commit(); db.refresh(package)
+    return package
 
 
 @app.get("/api/v1/campaigns", response_model=list[CampaignOut])
