@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from .db import get_db
 from .models import User
+from .performance import router as performance_router
 from .security import decode_access_token
 
 router = APIRouter()
@@ -67,3 +68,6 @@ def serve_media(filename: str):
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Media not found")
     return FileResponse(path)
+
+
+router.include_router(performance_router)
