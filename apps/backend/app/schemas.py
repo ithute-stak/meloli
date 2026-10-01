@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, SecretStr
 
-from .models import CampaignStatus, UserRole
+from .models import CampaignStatus, PaymentStatus, UserRole
 
 
 class UserRegister(BaseModel):
@@ -20,7 +20,6 @@ class UserLogin(BaseModel):
 
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-
     id: int
     full_name: str
     business_name: str | None
@@ -39,7 +38,6 @@ class AuthToken(BaseModel):
 
 class PackageOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-
     id: int
     code: str
     name: str
@@ -61,7 +59,6 @@ class CampaignCreate(BaseModel):
 
 class CampaignOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-
     id: int
     advertiser_id: int
     package_id: int
@@ -83,6 +80,29 @@ class CampaignDecision(BaseModel):
     status: CampaignStatus
     reviewer_note: str | None = Field(default=None, max_length=3000)
     scheduled_publish_at: datetime | None = None
+
+
+class PaymentCreate(BaseModel):
+    method: str = Field(default="manual", min_length=2, max_length=80)
+    reference: str | None = Field(default=None, max_length=160)
+
+
+class PaymentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    campaign_id: int
+    amount: float
+    currency: str
+    method: str
+    reference: str | None
+    status: PaymentStatus
+    paid_at: datetime | None
+    created_at: datetime
+
+
+class PaymentDecision(BaseModel):
+    status: PaymentStatus
+    reference: str | None = Field(default=None, max_length=160)
 
 
 class MetaIntegrationUpdate(BaseModel):
