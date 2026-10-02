@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { BadgePercent, BarChart3, Bell, CalendarDays, CheckCircle2, ChevronRight, CircleDollarSign, Clock3, FileText, Globe2, Headphones, KeyRound, LayoutDashboard, Loader2, LogOut, Megaphone, Menu, Package, Send, Search, Settings, ShieldCheck, TrendingUp, Users, X } from "lucide-react";
 import { api, clearSession, getSessionUser, SessionUser } from "@/lib/api";
+import { useRealtimeTopics } from "@/app/components/RealtimeBridge";
 
 type Campaign={id:number;advertiser_id:number;title:string;status:string;preferred_publish_at?:string|null;scheduled_publish_at?:string|null;created_at:string};
 type Summary={advertisers:number;campaigns:number;awaiting_review:number;scheduled:number;published:number;paid_payments:number;revenue:number;currency:string;failed_publications:number};
@@ -22,7 +23,16 @@ export default function Dashboard(){
   const [portalName,setPortalName]=useState("Meloli Airwaves");
   const [mobileNavOpen,setMobileNavOpen]=useState(false);
 
-  useEffect(()=>{const current=getSessionUser();if(!current||(current.role==="advertiser"&&!current.is_tenant_admin)){router.replace("/login");return;}setUser(current);const base=Promise.all([api<Campaign[]>("/api/v1/campaigns",{},true),api<Summary>("/api/v1/admin/reports/summary",{},true)]).then(([c,s])=>{setCampaigns(c);setSummary(s)});const brand=current.is_tenant_admin?api<{name:string}>("/api/v1/tenant-admin/profile",{},true).then(p=>setPortalName(p.name)).catch(()=>undefined):Promise.resolve();Promise.all([base,brand]).catch(e=>setError(e instanceof Error?e.message:"Unable to load dashboard")).finally(()=>setLoading(false));},[router]);
+  async function refreshDashboard(silent=false){
+    if(!silent)setLoading(true);
+    try{
+      const [c,s]=await Promise.all([api<Campaign[]>("/api/v1/campaigns",{},true),api<Summary>("/api/v1/admin/reports/summary",{},true)]);
+      setCampaigns(c);setSummary(s);setError("");
+    }catch(e){if(!silent)setError(e instanceof Error?e.message:"Unable to load dashboard")}
+    finally{if(!silent)setLoading(false)}
+  }
+  useEffect(()=>{const current=getSessionUser();if(!current||(current.role==="advertiser"&&!current.is_tenant_admin)){router.replace("/login");return;}setUser(current);refreshDashboard();if(current.is_tenant_admin)api<{name:string}>("/api/v1/tenant-admin/profile",{},true).then(p=>setPortalName(p.name)).catch(()=>undefined);},[router]);
+  useRealtimeTopics(["campaign","payment","notification","tenant_billing","tenant"],()=>{refreshDashboard(true)});
   const filtered=useMemo(()=>campaigns.filter(c=>c.title.toLowerCase().includes(query.toLowerCase())).slice(0,8),[campaigns,query]);
   const schedule=useMemo(()=>campaigns.filter(c=>c.scheduled_publish_at&&["scheduled","published"].includes(c.status)).sort((a,b)=>new Date(a.scheduled_publish_at!).getTime()-new Date(b.scheduled_publish_at!).getTime()).slice(0,5),[campaigns]);
   const kpis=useMemo(()=>{
