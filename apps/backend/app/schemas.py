@@ -81,6 +81,12 @@ class CampaignOut(BaseModel):
     scheduled_publish_at: datetime | None
     status: CampaignStatus
     reviewer_note: str | None
+    proof_status: str
+    proof_requested_at: datetime | None
+    proof_approved_at: datetime | None
+    proof_feedback: str | None
+    proof_requested_by_user_id: int | None
+    proof_approved_by_user_id: int | None
     cancelled_at: datetime | None
     cancellation_reason: str | None
     cancelled_by_user_id: int | None
