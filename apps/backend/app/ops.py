@@ -166,12 +166,13 @@ def system_health(_: User = Depends(staff), db: Session = Depends(get_db)):
     }
 
 
-def _commercial_pdf(title: str, campaign: Campaign, package: AdvertisingPackage, advertiser: User, document_no: str, paid: bool = False, db: Session | None = None) -> bytes:
+def _commercial_pdf(title: str, campaign: Campaign, package: AdvertisingPackage, advertiser: User, document_no: str, paid: bool = False, db: Session | None = None, amount: float | None = None, payment_method: str | None = None, payment_reference: str | None = None) -> bytes:
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
     pdf.setTitle(f"{title} {document_no}")
     status_text = "PAID" if paid else ("QUOTATION" if "quotation" in title.lower() else "PAYMENT DUE")
+    document_amount = float(package.price) if amount is None else float(amount)
     draw_header(pdf, db, title, document_no, status_text) if db is not None else None
 
     top = height - 154
@@ -204,7 +205,7 @@ def _commercial_pdf(title: str, campaign: Campaign, package: AdvertisingPackage,
     pdf.setFillColor(NAVY)
     pdf.setFont("Helvetica-Bold", 10)
     pdf.drawCentredString(365, y, str(package.posts_included))
-    pdf.drawRightString(width - 58, y, f"{package.currency} {float(package.price):,.2f}")
+    pdf.drawRightString(width - 58, y, f"{package.currency} {document_amount:,.2f}")
     pdf.setStrokeColor(BORDER)
     pdf.line(46, y - 29, width - 46, y - 29)
 
@@ -213,12 +214,12 @@ def _commercial_pdf(title: str, campaign: Campaign, package: AdvertisingPackage,
     pdf.setFillColor(MUTED)
     pdf.setFont("Helvetica", 9)
     pdf.drawRightString(width - 170, total_y, "Subtotal")
-    pdf.drawRightString(width - 58, total_y, f"{package.currency} {float(package.price):,.2f}")
+    pdf.drawRightString(width - 58, total_y, f"{package.currency} {document_amount:,.2f}")
     pdf.setFillColor(NAVY)
     pdf.setFont("Helvetica-Bold", 13)
     pdf.drawRightString(width - 170, total_y - 28, "TOTAL")
     pdf.setFillColor(RED)
-    pdf.drawRightString(width - 58, total_y - 28, f"{package.currency} {float(package.price):,.2f}")
+    pdf.drawRightString(width - 58, total_y - 28, f"{package.currency} {document_amount:,.2f}")
 
     # Campaign brief.
     brief_y = total_y - 72
@@ -244,6 +245,13 @@ def _commercial_pdf(title: str, campaign: Campaign, package: AdvertisingPackage,
     pdf.drawString(60, note_y + 31, note_title)
     pdf.setFillColor(NAVY)
     pdf.setFont("Helvetica", 8)
+    if payment_method:
+        pdf.setFillColor(MUTED)
+        pdf.setFont("Helvetica", 8)
+        method_text = payment_method.replace("_", " ").title()
+        ref_text = f" · Ref: {payment_reference}" if payment_reference else ""
+        pdf.drawString(46, brief_y - 82, f"Payment method: {method_text}{ref_text}"[:92])
+
     note = "This document is marked paid in the Meloli portal." if paid else (
         "This quotation is issued for the selected campaign package and may be used for payment approval."
         if "quotation" in title.lower() else
@@ -281,8 +289,20 @@ def quotation(campaign_id: int, user: User = Depends(current_user), db: Session 
 @router.get("/api/v1/campaigns/{campaign_id}/invoice.pdf")
 def invoice(campaign_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     campaign, package, advertiser = _document_context(db, campaign_id, user)
-    paid = bool(db.scalar(select(func.count(Payment.id)).where(Payment.campaign_id == campaign.id, Payment.status == PaymentStatus.PAID)))
-    data = _commercial_pdf("Advertising invoice", campaign, package, advertiser, f"INV-MEL-{campaign.id:06d}", paid=paid, db=db)
+    latest_payment = db.scalar(select(Payment).where(Payment.campaign_id == campaign.id).order_by(Payment.created_at.desc()))
+    paid = bool(latest_payment and latest_payment.status == PaymentStatus.PAID)
+    data = _commercial_pdf(
+        "Advertising invoice",
+        campaign,
+        package,
+        advertiser,
+        f"INV-MEL-{campaign.id:06d}",
+        paid=paid,
+        db=db,
+        amount=float(latest_payment.amount) if latest_payment else None,
+        payment_method=latest_payment.method if latest_payment else None,
+        payment_reference=latest_payment.reference if latest_payment else None,
+    )
     audit(db, user, "invoice.generated", "campaign", campaign.id)
     db.commit()
     return Response(data, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="meloli-invoice-{campaign.id}.pdf"'})
