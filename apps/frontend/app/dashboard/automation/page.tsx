@@ -93,7 +93,7 @@ export default function AutomationPage(){
         </section>
 
         <section className="mt-4 rounded-xl border border-blue-200 bg-[#e7f3ff] p-4">
-          <div className="flex items-start gap-3"><RotateCcw className="mt-0.5 shrink-0 text-[#0866ff]" size={18}/><div><p className="font-bold text-slate-900">Automated routines currently covered</p><p className="mt-1 text-sm leading-6 text-[#65676b]">Notification delivery, advertiser subscription expiry, monthly corporate invoices, commercial alerts, tenant subscription lifecycle, realtime-event cleanup, competition vote sync and scheduled Facebook publishing.</p></div></div>
+          <div className="flex items-start gap-3"><RotateCcw className="mt-0.5 shrink-0 text-[#0866ff]" size={18}/><div><p className="font-bold text-slate-900">Automated routines currently covered</p><p className="mt-1 text-sm leading-6 text-[#65676b]">Notification delivery, Meta webhook processing, campaign reminders, competition closing/sync, Facebook KPI synchronization, Meta/domain/backup health checks, daily Page digests, subscription lifecycle, review-presence cleanup, corporate invoices and scheduled Facebook publishing.</p></div></div>
         </section>
       </>}
     </div>
