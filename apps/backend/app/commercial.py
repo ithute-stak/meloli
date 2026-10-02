@@ -5,7 +5,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -14,7 +14,7 @@ from reportlab.pdfgen import canvas
 from .branding import LIGHT, MUTED, NAVY, RED, draw_footer, draw_header, info_label
 from .communications import send_direct_email
 from .db import get_db
-from .models import AdvertiserSubscription, AdvertisingPackage, AuditLog, Campaign, CorporateAccount, CorporateInvoice, CorporateSettlement, Notification, Payment, PaymentStatus, PromoCode, SubscriptionPlan, User, UserRole
+from .models import AdvertiserSubscription, AdvertisingPackage, AuditLog, Campaign, CorporateAccount, CorporateCreditNote, CorporateInvoice, CorporateInvoiceLine, CorporateSettlement, Notification, Payment, PaymentStatus, PromoCode, SubscriptionPlan, User, UserRole
 from .security import validate_token_user
 
 router = APIRouter()
@@ -420,7 +420,13 @@ def settle_corporate(user_id: int, payload: CorporateSettlementWrite, admin: Use
     for invoice in invoices:
         if remaining <= 0:
             break
-        balance = Decimal(str(invoice.amount or 0)) - Decimal(str(invoice.amount_paid or 0))
+        credited = sum(
+            (Decimal(str(value)) for value in db.scalars(
+                select(CorporateCreditNote.amount).where(CorporateCreditNote.invoice_id == invoice.id)
+            )),
+            Decimal("0.00"),
+        )
+        balance = Decimal(str(invoice.amount or 0)) - Decimal(str(invoice.amount_paid or 0)) - credited
         if balance <= 0:
             continue
         applied = min(balance, remaining)
@@ -474,24 +480,19 @@ def generate_monthly_corporate_invoices(db: Session) -> int:
         if existing:
             continue
 
-        previous_invoice = db.scalar(
-            select(CorporateInvoice)
-            .where(CorporateInvoice.corporate_account_id == account.id)
-            .order_by(CorporateInvoice.issued_at.desc())
-            .limit(1)
-        )
-        charges_query = (
-            select(Payment.amount)
+        invoiced_payment_ids = select(CorporateInvoiceLine.payment_id)
+        charges = list(db.scalars(
+            select(Payment)
             .join(Campaign, Campaign.id == Payment.campaign_id)
             .where(
                 Campaign.advertiser_id == account.user_id,
                 Payment.method == "corporate_credit",
                 Payment.status == PaymentStatus.PAID,
+                Payment.id.not_in(invoiced_payment_ids),
             )
-        )
-        if previous_invoice and previous_invoice.issued_at:
-            charges_query = charges_query.where(Payment.created_at > previous_invoice.issued_at)
-        new_charges = sum((Decimal(str(value)) for value in db.scalars(charges_query)), Decimal("0.00"))
+            .order_by(Payment.created_at, Payment.id)
+        ))
+        new_charges = sum((Decimal(str(payment.amount)) for payment in charges), Decimal("0.00"))
         invoice_amount = min(new_charges, outstanding)
         if invoice_amount <= 0:
             continue
@@ -508,6 +509,16 @@ def generate_monthly_corporate_invoices(db: Session) -> int:
         )
         db.add(invoice)
         db.flush()
+        allocated = Decimal("0.00")
+        for payment in charges:
+            if allocated >= invoice_amount:
+                break
+            available = Decimal(str(payment.amount))
+            line_amount = min(available, invoice_amount - allocated)
+            if line_amount <= 0:
+                continue
+            db.add(CorporateInvoiceLine(invoice_id=invoice.id, payment_id=payment.id, amount=line_amount))
+            allocated += line_amount
         user = db.get(User, account.user_id)
         if user:
             from .communications import enqueue_notification
@@ -549,7 +560,8 @@ def list_corporate_invoices(_: User = Depends(super_admin), db: Session = Depend
             "advertiser": (user.business_name or user.full_name) if user else None,
             "amount": float(invoice.amount),
             "amount_paid": float(invoice.amount_paid),
-            "balance": max(0.0, float(invoice.amount) - float(invoice.amount_paid)),
+            "credited_amount": float(db.scalar(select(func.coalesce(func.sum(CorporateCreditNote.amount), 0)).where(CorporateCreditNote.invoice_id == invoice.id)) or 0),
+            "balance": max(0.0, float(invoice.amount) - float(invoice.amount_paid) - float(db.scalar(select(func.coalesce(func.sum(CorporateCreditNote.amount), 0)).where(CorporateCreditNote.invoice_id == invoice.id)) or 0)),
             "currency": invoice.currency,
             "status": invoice.status,
             "period_key": invoice.period_key,
@@ -622,15 +634,18 @@ def _corporate_invoice_response(invoice: CorporateInvoice, account: CorporateAcc
     pdf.line(46, y - 30, width - 46, y - 30)
 
     total_y = y - 74
+    credited_amount = float(db.scalar(select(func.coalesce(func.sum(CorporateCreditNote.amount), 0)).where(CorporateCreditNote.invoice_id == invoice.id)) or 0)
     pdf.setFillColor(MUTED)
     pdf.setFont("Helvetica", 9)
     pdf.drawRightString(width - 175, total_y, "Paid")
     pdf.drawRightString(width - 58, total_y, f"{invoice.currency} {float(invoice.amount_paid):,.2f}")
-    pdf.drawRightString(width - 175, total_y - 24, "Balance due")
-    pdf.setFillColor(RED if invoice.status != "paid" else colors.HexColor("#16A34A"))
+    pdf.drawRightString(width - 175, total_y - 18, "Credit notes")
+    pdf.drawRightString(width - 58, total_y - 18, f"{invoice.currency} {credited_amount:,.2f}")
+    pdf.drawRightString(width - 175, total_y - 42, "Balance due")
+    balance = max(0.0, float(invoice.amount) - float(invoice.amount_paid) - credited_amount)
+    pdf.setFillColor(RED if balance > 0 else colors.HexColor("#16A34A"))
     pdf.setFont("Helvetica-Bold", 18)
-    balance = max(0.0, float(invoice.amount) - float(invoice.amount_paid))
-    pdf.drawRightString(width - 58, total_y - 28, f"{invoice.currency} {balance:,.2f}")
+    pdf.drawRightString(width - 58, total_y - 46, f"{invoice.currency} {balance:,.2f}")
 
     pdf.setFillColor(colors.HexColor("#FFF1F4") if invoice.status == "overdue" else LIGHT)
     pdf.roundRect(46, 112, width - 92, 58, 12, fill=1, stroke=0)
