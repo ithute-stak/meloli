@@ -8,7 +8,7 @@ from .db import SessionLocal
 from .communications import deliver_pending, enqueue_notification
 from .commercial import expire_subscriptions, generate_monthly_corporate_invoices, process_commercial_alerts
 from .meta_service import MetaError, publish_campaign as publish_to_meta
-from .models import Campaign, CampaignStatus, PublicationAttempt, PublicationStatus, SystemSetting
+from .models import Campaign, CampaignStatus, PublicationAttempt, PublicationStatus, SystemSetting, Tenant
 from .security import decrypt_secret
 
 
@@ -23,16 +23,10 @@ def run_once() -> int:
     db = SessionLocal()
     processed = 0
     try:
-        page_id = setting(db, "meta.page_id")
-        token = setting(db, "meta.page_access_token")
-        version = setting(db, "meta.graph_api_version")
         deliver_pending(db)
         expire_subscriptions(db)
         generate_monthly_corporate_invoices(db)
         process_commercial_alerts(db)
-        if not page_id or not token or not version:
-            return 0
-
         due = list(db.scalars(
             select(Campaign)
             .where(
@@ -48,6 +42,18 @@ def run_once() -> int:
         ))
 
         for campaign in due:
+            from .tenancy import tenant_setting
+            page_id = tenant_setting(db, campaign.tenant_id, "meta.page_id") if campaign.tenant_id else None
+            token = tenant_setting(db, campaign.tenant_id, "meta.page_access_token") if campaign.tenant_id else None
+            version = tenant_setting(db, campaign.tenant_id, "meta.graph_api_version") if campaign.tenant_id else None
+            page_id = page_id or setting(db, "meta.page_id")
+            token = token or setting(db, "meta.page_access_token")
+            version = version or setting(db, "meta.graph_api_version")
+            tenant = db.get(Tenant, campaign.tenant_id) if campaign.tenant_id else None
+            portal_name = tenant.name if tenant else "Meloli Airwaves"
+            if not page_id or not token or not version:
+                continue
+
             previous = db.scalar(select(func.count(PublicationAttempt.id)).where(PublicationAttempt.campaign_id == campaign.id)) or 0
             attempt = PublicationAttempt(
                 campaign_id=campaign.id,
@@ -78,7 +84,7 @@ def run_once() -> int:
                     campaign.advertiser_id,
                     "published",
                     "Your advert is live",
-                    f"{campaign.title} has been published automatically on the Meloli Airwaves Facebook Page.",
+                    f"{campaign.title} has been published automatically on the {portal_name} Facebook Page.",
                 )
                 from .corporate_api import emit_corporate_webhook
                 emit_corporate_webhook(db, campaign, "campaign.published")
@@ -91,7 +97,7 @@ def run_once() -> int:
                     campaign.advertiser_id,
                     "publishing_delay",
                     "Publishing delayed",
-                    f"{campaign.title} could not be published at the scheduled time. Meloli has been alerted and will retry.",
+                    f"{campaign.title} could not be published at the scheduled time. {portal_name} staff have been alerted and will retry.",
                 )
             db.commit()
         return processed
