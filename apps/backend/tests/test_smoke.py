@@ -383,6 +383,7 @@ def test_advertising_workflow_smoke():
             json={
                 "page_name": "Page Alpha",
                 "desired_slug": "page-alpha",
+                "facebook_page_id": "page-alpha-facebook-id",
                 "owner_name": "Alpha Owner",
                 "owner_email": "alpha.owner@example.com",
                 "owner_phone": "+26650000001",
@@ -405,6 +406,20 @@ def test_advertising_workflow_smoke():
             },
         )
         assert tenant_b.status_code == 201, tenant_b.text
+
+        duplicate_page = client.post(
+            "/api/v1/tenants/register",
+            json={
+                "page_name": "Page Alpha Duplicate",
+                "desired_slug": "page-alpha-copy",
+                "facebook_page_id": "page-alpha-facebook-id",
+                "owner_name": "Duplicate Owner",
+                "owner_email": "duplicate.owner@example.com",
+                "password": "DuplicateOwnerPassword123!",
+            },
+        )
+        assert duplicate_page.status_code == 409
+        assert "already registered" in duplicate_page.json()["detail"].lower()
 
         resolved_a = client.get("/api/v1/tenants/resolve?slug=page-alpha")
         assert resolved_a.status_code == 200, resolved_a.text
@@ -474,6 +489,54 @@ def test_advertising_workflow_smoke():
         theko = next(row for row in vote_data["disqualified_people"] if row["user_name"] == "Koetlisi Theko")
         assert theko["comments_liked"] == 2
         assert all(row["valid_likes"] == 1 for row in vote_data["comments"])
+
+        # A duplicate copy of the same Facebook comment must not inflate totals.
+        # If Koetlisi removes the second like, the remaining single-comment vote
+        # becomes valid again on the next full sync/import.
+        refreshed_votes = client.post(
+            f"/api/v1/campaigns/{competition_id}/competition/import",
+            headers=auth(alpha_token),
+            json={
+                "comments": [
+                    {
+                        "comment_id": "comment-1",
+                        "message": "Entry One",
+                        "author_name": "Contestant One",
+                        "reactions": [
+                            {"user_id": "theko", "user_name": "Koetlisi Theko"},
+                            {"user_id": "mpho", "user_name": "Mpho"},
+                        ],
+                    },
+                    {
+                        "comment_id": "comment-1",
+                        "message": "Entry One",
+                        "author_name": "Contestant One",
+                        "reactions": [
+                            {"user_id": "theko", "user_name": "Koetlisi Theko"},
+                        ],
+                    },
+                    {
+                        "comment_id": "comment-3",
+                        "message": "Entry Three",
+                        "author_name": "Contestant Three",
+                        "reactions": [
+                            {"user_id": "palesa", "user_name": "Palesa"},
+                        ],
+                    },
+                ]
+            },
+        )
+        assert refreshed_votes.status_code == 200, refreshed_votes.text
+        refreshed = refreshed_votes.json()
+        assert refreshed["summary"]["comments"] == 2
+        assert refreshed["summary"]["raw_likes"] == 3
+        assert refreshed["summary"]["valid_likes"] == 3
+        assert refreshed["summary"]["invalid_likes"] == 0
+        assert refreshed["summary"]["disqualified_people"] == 0
+        assert refreshed["disqualified_people"] == []
+        entry_one = next(row for row in refreshed["comments"] if row["facebook_comment_id"] == "comment-1")
+        assert entry_one["raw_likes"] == 2
+        assert entry_one["valid_likes"] == 2
 
         cross_tenant_results = client.get(
             f"/api/v1/campaigns/{competition_id}/competition/results",
