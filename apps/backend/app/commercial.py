@@ -13,7 +13,7 @@ from reportlab.pdfgen import canvas
 
 from .branding import LIGHT, MUTED, NAVY, RED, draw_footer, draw_header, info_label
 from .db import get_db
-from .models import AdvertiserSubscription, AuditLog, Campaign, CorporateAccount, CorporateSettlement, Payment, PromoCode, SubscriptionPlan, User, UserRole
+from .models import AdvertiserSubscription, AdvertisingPackage, AuditLog, Campaign, CorporateAccount, CorporateSettlement, Payment, PaymentStatus, PromoCode, SubscriptionPlan, User, UserRole
 from .security import decode_access_token
 
 router = APIRouter()
@@ -452,18 +452,32 @@ def corporate_settlements(user_id: int, _: User = Depends(super_admin), db: Sess
 @router.get("/api/v1/admin/promos/performance")
 def promo_performance(_: User = Depends(super_admin), db: Session = Depends(get_db)):
     rows = list(db.scalars(select(PromoCode).order_by(PromoCode.uses.desc(), PromoCode.created_at.desc())))
-    return [
-        {
-            "id": p.id,
-            "code": p.code,
-            "uses": p.uses,
-            "max_uses": p.max_uses,
-            "utilization_percent": round((p.uses / p.max_uses) * 100, 1) if p.max_uses else None,
-            "percent_off": float(p.percent_off),
-            "fixed_off": float(p.fixed_off),
-            "active": p.active,
-            "starts_at": p.starts_at,
-            "ends_at": p.ends_at,
-        }
-        for p in rows
-    ]
+    result = []
+    for promo in rows:
+        payments = list(db.scalars(select(Payment).where(Payment.promo_code_id == promo.id)))
+        paid_payments = [p for p in payments if p.status == PaymentStatus.PAID]
+        revenue = sum(float(p.amount) for p in paid_payments)
+        savings = 0.0
+        for payment in payments:
+            campaign = db.get(Campaign, payment.campaign_id)
+            package = db.get(AdvertisingPackage, campaign.package_id) if campaign else None
+            if package:
+                savings += max(0.0, float(package.price) - float(payment.amount))
+        result.append({
+            "id": promo.id,
+            "code": promo.code,
+            "uses": promo.uses,
+            "max_uses": promo.max_uses,
+            "utilization_percent": round((promo.uses / promo.max_uses) * 100, 1) if promo.max_uses else None,
+            "percent_off": float(promo.percent_off),
+            "fixed_off": float(promo.fixed_off),
+            "active": promo.active,
+            "starts_at": promo.starts_at,
+            "ends_at": promo.ends_at,
+            "attributed_payments": len(payments),
+            "paid_payments": len(paid_payments),
+            "attributed_revenue": round(revenue, 2),
+            "discount_value": round(savings, 2),
+        })
+    return result
+
