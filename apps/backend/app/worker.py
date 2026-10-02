@@ -80,6 +80,8 @@ def run_once() -> int:
                     "Your advert is live",
                     f"{campaign.title} has been published automatically on the Meloli Airwaves Facebook Page.",
                 )
+                from .corporate_api import emit_corporate_webhook
+                emit_corporate_webhook(db, campaign, "campaign.published")
                 processed += 1
             except MetaError as exc:
                 attempt.status = PublicationStatus.FAILED
