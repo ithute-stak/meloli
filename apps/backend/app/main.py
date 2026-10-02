@@ -65,6 +65,7 @@ from .schemas import (
     UserRegister,
 )
 from .security import create_access_token, validate_token_user, decrypt_secret, encrypt_secret, hash_password, verify_password
+from .realtime import emit_realtime_event
 import pyotp
 
 bearer = HTTPBearer(auto_error=False)
@@ -515,6 +516,12 @@ def create_campaign(payload: CampaignCreate, user: User = Depends(current_user),
     for position, item in enumerate(media_items):
         db.add(CampaignMedia(campaign_id=campaign.id, url=item.url, content_type=item.content_type.lower(), position=position))
     audit(db, user, "campaign.created", "campaign", campaign.id, f"Package {package.code}; media {len(media_items) or (1 if primary_media else 0)}")
+    if campaign.tenant_id:
+        emit_realtime_event(
+            db, "campaign.created", tenant_id=campaign.tenant_id, audience="tenant_staff",
+            entity_type="campaign", entity_id=campaign.id,
+            payload={"campaign_id": campaign.id, "title": campaign.title, "status": campaign.status.value, "advertiser_id": campaign.advertiser_id},
+        )
     db.commit()
     db.refresh(campaign)
     return campaign
@@ -564,6 +571,12 @@ def decide_campaign(campaign_id: int, payload: CampaignDecision, staff: User = D
         campaign.scheduled_publish_at = payload.scheduled_publish_at
     notify(db, campaign.advertiser_id, "campaign_status", f"Campaign {payload.status.value.replace('_', ' ')}", payload.reviewer_note or f"{campaign.title} is now {payload.status.value.replace('_', ' ')}.")
     audit(db, staff, f"campaign.{payload.status.value}", "campaign", campaign.id, payload.reviewer_note)
+    if campaign.tenant_id:
+        emit_realtime_event(
+            db, "campaign.status_changed", tenant_id=campaign.tenant_id, audience="tenant_staff",
+            entity_type="campaign", entity_id=campaign.id,
+            payload={"campaign_id": campaign.id, "title": campaign.title, "status": payload.status.value, "reviewer_note": payload.reviewer_note},
+        )
     db.commit()
     db.refresh(campaign)
     from .corporate_api import emit_corporate_webhook
@@ -643,6 +656,12 @@ def create_payment(campaign_id: int, payload: PaymentCreate, user: User = Depend
     if promo:
         detail += f"; promo {promo.code}"
     audit(db, user, "payment.created", "payment", payment.id, detail)
+    if campaign.tenant_id:
+        emit_realtime_event(
+            db, "payment.created", tenant_id=campaign.tenant_id, audience="tenant_staff",
+            entity_type="payment", entity_id=payment.id,
+            payload={"payment_id": payment.id, "campaign_id": campaign.id, "status": payment.status.value, "amount": float(payment.amount), "currency": payment.currency},
+        )
     db.commit()
     db.refresh(payment)
     return payment
@@ -669,6 +688,12 @@ def decide_payment(payment_id: int, payload: PaymentDecision, staff: User = Depe
     elif campaign:
         notify(db, campaign.advertiser_id, "payment", f"Payment {payload.status.value}", f"Payment for {campaign.title} is marked {payload.status.value}.")
     audit(db, staff, f"payment.{payload.status.value}", "payment", payment.id, payment.reference)
+    if campaign.tenant_id:
+        emit_realtime_event(
+            db, "payment.status_changed", tenant_id=campaign.tenant_id, audience="tenant_staff",
+            entity_type="payment", entity_id=payment.id,
+            payload={"payment_id": payment.id, "campaign_id": campaign.id, "status": payload.status.value, "reference": payment.reference},
+        )
     db.commit()
     db.refresh(payment)
     return payment
@@ -768,7 +793,9 @@ def mark_notification_read(notification_id: int, user: User = Depends(current_us
 
 @app.get("/api/v1/admin/reports/summary", response_model=ReportSummary)
 def report_summary(staff: User = Depends(staff_user), db: Session = Depends(get_db)):
-    tenant_id = staff.tenant_id if staff.is_tenant_admin else None
+    tenant_id = None if staff.role == UserRole.SUPER_ADMIN else staff.tenant_id
+    if staff.role != UserRole.SUPER_ADMIN and tenant_id is None:
+        raise HTTPException(status_code=403, detail="Staff account is not attached to a tenant")
     advertiser_query = select(func.count(User.id)).where(User.role == UserRole.ADVERTISER)
     campaign_query = select(func.count(Campaign.id))
     awaiting_query = select(func.count(Campaign.id)).where(Campaign.status.in_([CampaignStatus.SUBMITTED, CampaignStatus.IN_REVIEW]))
@@ -801,7 +828,9 @@ def report_summary(staff: User = Depends(staff_user), db: Session = Depends(get_
 @app.get("/api/v1/publications", response_model=list[PublicationOut])
 def list_publications(staff: User = Depends(staff_user), db: Session = Depends(get_db)):
     query = select(PublicationAttempt).join(Campaign, Campaign.id == PublicationAttempt.campaign_id).order_by(PublicationAttempt.created_at.desc()).limit(200)
-    if staff.is_tenant_admin and staff.tenant_id:
+    if staff.role != UserRole.SUPER_ADMIN:
+        if not staff.tenant_id:
+            raise HTTPException(status_code=403, detail="Staff account is not attached to a tenant")
         query = query.where(Campaign.tenant_id == staff.tenant_id)
     return list(db.scalars(query))
 
@@ -854,6 +883,12 @@ def publish_campaign(campaign_id: int, publisher: User = Depends(publisher_user)
         portal_name = tenant.name if tenant else "Advertising Portal"
         notify(db, campaign.advertiser_id, "published", "Your advert is live", f"{campaign.title} has been published on the {portal_name} Facebook Page.")
         audit(db, publisher, "campaign.published", "campaign", campaign.id, result.post_id)
+        if campaign.tenant_id:
+            emit_realtime_event(
+                db, "campaign.published", tenant_id=campaign.tenant_id, audience="tenant_staff",
+                entity_type="campaign", entity_id=campaign.id,
+                payload={"campaign_id": campaign.id, "title": campaign.title, "facebook_post_url": result.post_url},
+            )
         db.commit()
         db.refresh(campaign)
         db.refresh(attempt)
@@ -864,6 +899,12 @@ def publish_campaign(campaign_id: int, publisher: User = Depends(publisher_user)
         attempt.status = PublicationStatus.FAILED
         attempt.error_message = str(exc)[:4000]
         audit(db, publisher, "campaign.publish_failed", "campaign", campaign.id, str(exc))
+        if campaign.tenant_id:
+            emit_realtime_event(
+                db, "campaign.publish_failed", tenant_id=campaign.tenant_id, audience="tenant_staff",
+                entity_type="campaign", entity_id=campaign.id,
+                payload={"campaign_id": campaign.id, "title": campaign.title, "error": str(exc)[:500]},
+            )
         db.commit()
         from .corporate_api import emit_corporate_webhook
         emit_corporate_webhook(db, campaign, "campaign.publish_failed")
