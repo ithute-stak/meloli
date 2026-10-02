@@ -268,6 +268,16 @@ class Campaign(Base):
     media_items: Mapped[list["CampaignMedia"]] = relationship(back_populates="campaign", cascade="all, delete-orphan", order_by="CampaignMedia.position")
 
 
+class CampaignReviewPresence(Base):
+    __tablename__ = "campaign_review_presence"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id"), nullable=True, index=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    __table_args__ = (UniqueConstraint("campaign_id", "user_id", name="uq_campaign_review_presence_campaign_user"),)
+
+
 class Payment(Base):
     __tablename__ = "payments"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
