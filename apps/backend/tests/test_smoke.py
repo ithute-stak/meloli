@@ -75,6 +75,7 @@ def test_advertising_workflow_smoke():
         duplicate = client.post(f"/api/v1/campaigns/{campaign_id}/duplicate", headers=auth(advertiser_token))
         assert duplicate.status_code == 201, duplicate.text
         assert duplicate.json()["source_campaign_id"] == campaign_id
+        duplicate_campaign_id = duplicate.json()["id"]
 
         ticket = client.post(
             "/api/v1/support/tickets",
@@ -98,6 +99,45 @@ def test_advertising_workflow_smoke():
         )
         assert admin_login.status_code == 200, admin_login.text
         admin_token = admin_login.json()["access_token"]
+
+        promo = client.post(
+            "/api/v1/admin/promos",
+            headers=auth(admin_token),
+            json={"code": "WELCOME10", "percent_off": 10, "fixed_off": 0, "max_uses": 10, "active": True},
+        )
+        assert promo.status_code == 201, promo.text
+
+        discounted = client.post(
+            f"/api/v1/campaigns/{duplicate_campaign_id}/payments",
+            headers=auth(advertiser_token),
+            json={"method": "bank_transfer", "reference": "DISC-001", "promo_code": "WELCOME10"},
+        )
+        assert discounted.status_code == 201, discounted.text
+        assert discounted.json()["amount"] < payment.json()["amount"]
+
+        corporate = client.put(
+            f"/api/v1/admin/advertisers/{register.json()['user']['id']}/corporate",
+            headers=auth(admin_token),
+            json={"credit_limit": 2000, "billing_cycle_day": 28, "active": True},
+        )
+        assert corporate.status_code == 200, corporate.text
+        assert corporate.json()["credit_limit"] == 2000
+
+        plan = client.post(
+            "/api/v1/admin/subscription-plans",
+            headers=auth(admin_token),
+            json={"code": "BUSINESS4", "name": "Business Four", "description": "Four monthly adverts", "monthly_price": 1500, "included_posts": 4, "active": True},
+        )
+        assert plan.status_code == 201, plan.text
+        assigned = client.post(
+            "/api/v1/admin/subscriptions",
+            headers=auth(admin_token),
+            json={"user_id": register.json()["user"]["id"], "plan_id": plan.json()["id"], "months": 1},
+        )
+        assert assigned.status_code == 201, assigned.text
+        commercial = client.get("/api/v1/commercial/my-account", headers=auth(advertiser_token))
+        assert commercial.status_code == 200
+        assert commercial.json()["subscription"]["remaining_posts"] == 4
 
         paid = client.patch(
             f"/api/v1/payments/{payment_id}",
