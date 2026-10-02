@@ -7,6 +7,7 @@ from .communications import router as communications_router
 from .branding import router as branding_router
 from .lifecycle import router as lifecycle_router
 from .growth import router as growth_router
+from .corporate_api import router as corporate_api_router
 
 # Keep the established core application intact while composing newer feature
 # routers in one production entry point.
@@ -19,3 +20,4 @@ app.include_router(branding_router)
 app.include_router(lifecycle_router)
 
 app.include_router(growth_router)
+app.include_router(corporate_api_router)
