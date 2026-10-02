@@ -14,7 +14,7 @@ from reportlab.pdfgen import canvas
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .branding import LIGHT, MUTED, NAVY, RED, draw_footer, draw_header, info_label
+from .branding import LIGHT, MUTED, NAVY, RED, draw_footer, draw_header, info_label, tenant_brand
 from .db import Base, SessionLocal, engine, get_db
 from .commercial import discounted_amount, promo_for_code
 from .communications import enqueue_notification
@@ -592,9 +592,10 @@ def payment_receipt(payment_id: int, user: User = Depends(current_user), db: Ses
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
-    document_no = f"RCT-MEL-{payment.id:06d}"
-    pdf.setTitle(f"Meloli payment receipt {document_no}")
-    draw_header(pdf, db, "Payment receipt", document_no, "PAID")
+    brand_name, _, _ = tenant_brand(db, campaign.tenant_id)
+    document_no = f"RCT-{payment.id:06d}"
+    pdf.setTitle(f"{brand_name} payment receipt {document_no}")
+    draw_header(pdf, db, "Payment receipt", document_no, "PAID", tenant_id=campaign.tenant_id)
 
     top = height - 154
     pdf.setFillColor(LIGHT)
@@ -633,7 +634,7 @@ def payment_receipt(payment_id: int, user: User = Depends(current_user), db: Ses
     pdf.drawRightString(width - 62, y - 31, f"{payment.currency} {float(payment.amount):,.2f}")
     pdf.setFillColor(colors.HexColor("#C7CBDC"))
     pdf.setFont("Helvetica", 8)
-    pdf.drawString(62, y - 50, "Payment verified in the Meloli Airwaves Advertising Portal.")
+    pdf.drawString(62, y - 50, f"Payment verified in the {brand_name} Advertising Portal.")
 
     note_y = 112
     pdf.setFillColor(colors.HexColor("#ECFDF5"))
@@ -645,12 +646,12 @@ def payment_receipt(payment_id: int, user: User = Depends(current_user), db: Ses
     pdf.setFont("Helvetica", 8)
     pdf.drawString(60, note_y + 14, "Thank you. This receipt confirms payment for the advertising campaign shown above.")
 
-    draw_footer(pdf)
+    draw_footer(pdf, db, campaign.tenant_id)
     pdf.save()
     data = buffer.getvalue()
     audit(db, user, "receipt.generated", "payment", payment.id)
     db.commit()
-    return Response(data, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="meloli-receipt-{payment.id}.pdf"'})
+    return Response(data, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="advertising-receipt-{payment.id}.pdf"'})
 
 
 @app.get("/api/v1/notifications", response_model=list[NotificationOut])
