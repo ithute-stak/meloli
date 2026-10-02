@@ -39,6 +39,13 @@ class PublicationStatus(StrEnum):
     FAILED = "failed"
 
 
+class TicketStatus(StrEnum):
+    OPEN = "open"
+    IN_PROGRESS = "in_progress"
+    RESOLVED = "resolved"
+    CLOSED = "closed"
+
+
 class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -165,3 +172,31 @@ class CampaignPerformance(Base):
     shares: Mapped[int | None] = mapped_column(Integer, nullable=True)
     video_views: Mapped[int | None] = mapped_column(Integer, nullable=True)
     synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class CampaignPerformanceSnapshot(Base):
+    __tablename__ = "campaign_performance_snapshots"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id"), index=True)
+    impressions: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reach: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    engaged_users: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    clicks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reactions: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    comments: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    shares: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    video_views: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class SupportTicket(Base):
+    __tablename__ = "support_tickets"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    campaign_id: Mapped[int | None] = mapped_column(ForeignKey("campaigns.id"), nullable=True, index=True)
+    subject: Mapped[str] = mapped_column(String(180))
+    message: Mapped[str] = mapped_column(Text)
+    status: Mapped[TicketStatus] = mapped_column(Enum(TicketStatus, name="ticket_status"), default=TicketStatus.OPEN, index=True)
+    staff_reply: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
