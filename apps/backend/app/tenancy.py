@@ -8,11 +8,11 @@ import dns.resolver
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field, SecretStr
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .models import AdvertisingPackage, AuditLog, Tenant, TenantDomain, TenantSetting, User, UserRole
+from .models import AdvertisingPackage, AuditLog, Campaign, Tenant, TenantDomain, TenantSetting, User, UserRole
 from .security import decode_access_token, encrypt_secret, hash_password, validate_token_user
 
 router = APIRouter()
@@ -39,6 +39,10 @@ class TenantProfileWrite(BaseModel):
 
 class DomainWrite(BaseModel):
     hostname: str = Field(min_length=4, max_length=255)
+
+
+class TenantStateWrite(BaseModel):
+    active: bool
 
 
 class TenantMetaWrite(BaseModel):
@@ -198,6 +202,36 @@ def resolve_tenant(slug: str | None = None, host: str | None = None, db: Session
         raise HTTPException(status_code=404, detail="Portal not found")
     domains = list(db.scalars(select(TenantDomain).where(TenantDomain.tenant_id == tenant.id, TenantDomain.status == "verified")))
     return {**tenant_payload(tenant), "custom_domains": [row.hostname for row in domains]}
+
+
+@router.get("/api/v1/admin/tenants")
+def list_tenants(_: User = Depends(platform_admin), db: Session = Depends(get_db)):
+    rows = list(db.scalars(select(Tenant).order_by(Tenant.created_at.desc())))
+    result = []
+    for tenant in rows:
+        domains = list(db.scalars(select(TenantDomain).where(TenantDomain.tenant_id == tenant.id).order_by(TenantDomain.created_at)))
+        result.append({
+            **tenant_payload(tenant),
+            "owner": next((
+                {"id": user.id, "name": user.full_name, "email": user.email}
+                for user in db.scalars(select(User).where(User.tenant_id == tenant.id, User.is_tenant_admin.is_(True)).order_by(User.id))
+            ), None),
+            "users": db.scalar(select(func.count(User.id)).where(User.tenant_id == tenant.id)) or 0,
+            "campaigns": db.scalar(select(func.count(Campaign.id)).where(Campaign.tenant_id == tenant.id)) or 0,
+            "domains": [{"id": d.id, "hostname": d.hostname, "status": d.status, "verified_at": d.verified_at} for d in domains],
+        })
+    return result
+
+
+@router.patch("/api/v1/admin/tenants/{tenant_id}/state")
+def set_tenant_state(tenant_id: int, payload: TenantStateWrite, admin: User = Depends(platform_admin), db: Session = Depends(get_db)):
+    tenant = db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    tenant.active = payload.active
+    db.add(AuditLog(actor_user_id=admin.id, action="tenant.enabled" if payload.active else "tenant.disabled", entity_type="tenant", entity_id=str(tenant.id), detail=tenant.slug))
+    db.commit()
+    return {"id": tenant.id, "active": tenant.active}
 
 
 @router.get("/api/v1/tenant-admin/profile")
