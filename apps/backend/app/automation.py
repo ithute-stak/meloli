@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .models import AutomationJobState, SystemSetting, User, UserRole
+from .models import AuditLog, AutomationJobState, SystemSetting, User, UserRole
 from .realtime import emit_realtime_event
 from .security import validate_token_user
 
@@ -124,7 +124,47 @@ def list_automation_jobs(_: User = Depends(platform_admin), db: Session = Depend
         "run_count": row.run_count,
         "failure_count": row.failure_count,
         "due": job_due(row, now),
+        "stalled": bool(
+            row.last_status == "running"
+            and _utc(row.last_started_at)
+            and now - _utc(row.last_started_at) > timedelta(seconds=max(300, int(row.interval_seconds or 1) * 2))
+        ),
     } for row in rows]
+
+
+@router.post("/api/v1/admin/automation/jobs/{job_key}/run-now")
+def queue_automation_job(
+    job_key: str,
+    admin: User = Depends(platform_admin),
+    db: Session = Depends(get_db),
+):
+    row = db.scalar(select(AutomationJobState).where(AutomationJobState.job_key == job_key))
+    if row is None:
+        raise HTTPException(status_code=404, detail="Automation job not found")
+
+    previous_status = row.last_status
+    row.last_started_at = None
+    row.last_completed_at = None
+    row.last_status = "queued"
+    row.last_error = None
+
+    db.add(AuditLog(
+        actor_user_id=admin.id,
+        action="automation.job_queued",
+        entity_type="automation_job",
+        entity_id=job_key,
+        detail=f"Manual run requested; previous status={previous_status}",
+    ))
+    emit_realtime_event(
+        db,
+        "automation.job_queued",
+        audience="platform_admins",
+        entity_type="automation_job",
+        entity_id=job_key,
+        payload={"job_key": job_key, "previous_status": previous_status},
+    )
+    db.commit()
+    return {"job_key": job_key, "status": "queued", "due": True}
 
 
 @router.get("/api/v1/admin/platform-health")
