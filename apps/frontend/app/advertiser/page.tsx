@@ -34,7 +34,7 @@ export default function AdvertiserDashboard(){
     if(!current||current.role!=="advertiser"){router.replace("/login");return;}
     setUser(current);refreshAdvertiser();
   },[router]);
-  useRealtimeTopics(["campaign","payment","notification","competition"],()=>{refreshAdvertiser(true)});
+  useRealtimeTopics(["campaign","payment","notification","competition","performance"],()=>{refreshAdvertiser(true)});
 
   const stats=useMemo(()=>{
     const inProgress=campaigns.filter(c=>["payment_pending","submitted","in_review","changes_requested"].includes(c.status)).length;
