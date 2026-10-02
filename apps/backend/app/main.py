@@ -849,7 +849,10 @@ def publish_campaign(campaign_id: int, publisher: User = Depends(publisher_user)
         campaign.facebook_post_url = result.post_url
         campaign.published_at = datetime.now(timezone.utc)
         campaign.status = CampaignStatus.PUBLISHED
-        notify(db, campaign.advertiser_id, "published", "Your advert is live", f"{campaign.title} has been published on the Meloli Airwaves Facebook Page.")
+        campaign.publishing_retry_exhausted_at = None
+        tenant = db.get(Tenant, campaign.tenant_id) if campaign.tenant_id else None
+        portal_name = tenant.name if tenant else "Advertising Portal"
+        notify(db, campaign.advertiser_id, "published", "Your advert is live", f"{campaign.title} has been published on the {portal_name} Facebook Page.")
         audit(db, publisher, "campaign.published", "campaign", campaign.id, result.post_id)
         db.commit()
         db.refresh(campaign)
@@ -869,6 +872,9 @@ def publish_campaign(campaign_id: int, publisher: User = Depends(publisher_user)
 
 @app.post("/api/v1/campaigns/{campaign_id}/publish/retry", response_model=PublishResult)
 def retry_publish_campaign(campaign_id: int, publisher: User = Depends(publisher_user), db: Session = Depends(get_db)):
+    campaign = get_campaign_for_user(db, campaign_id, publisher)
+    campaign.publishing_retry_exhausted_at = None
+    db.commit()
     return publish_campaign(campaign_id=campaign_id, publisher=publisher, db=db)
 
 
