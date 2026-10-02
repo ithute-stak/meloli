@@ -111,23 +111,24 @@ def _ticket_for(user: User) -> str:
             "sub": str(user.id),
             "purpose": "realtime",
             "iat": now,
-            "exp": now + timedelta(seconds=90),
+            "exp": now + timedelta(minutes=5),
         },
         JWT_SECRET,
         algorithm=JWT_ALGORITHM,
     )
 
 
-def _user_id_from_ticket(ticket: str) -> int:
+def _ticket_identity(ticket: str) -> tuple[int, datetime]:
     payload = jwt.decode(ticket, JWT_SECRET, algorithms=[JWT_ALGORITHM])
     if payload.get("purpose") != "realtime":
         raise ValueError("Invalid realtime ticket")
-    return int(payload["sub"])
+    expires_at = datetime.fromtimestamp(float(payload["exp"]), tz=timezone.utc)
+    return int(payload["sub"]), expires_at
 
 
 @router.post("/api/v1/realtime/ticket")
 def realtime_ticket(user: User = Depends(current_user)):
-    return {"ticket": _ticket_for(user), "expires_in": 90}
+    return {"ticket": _ticket_for(user), "expires_in": 300}
 
 
 @router.websocket("/api/v1/realtime/ws")
@@ -137,7 +138,7 @@ async def realtime_ws(websocket: WebSocket):
         await websocket.close(code=4401)
         return
     try:
-        user_id = _user_id_from_ticket(ticket)
+        user_id, ticket_expires_at = _ticket_identity(ticket)
     except Exception:
         await websocket.close(code=4401)
         return
@@ -154,6 +155,9 @@ async def realtime_ws(websocket: WebSocket):
         last_id = int(raw_after) if raw_after and raw_after.isdigit() else 0
         await websocket.send_json({"type": "ready", "last_event_id": last_id})
         while True:
+            if datetime.now(timezone.utc) >= ticket_expires_at:
+                await websocket.close(code=4401)
+                return
             events = await asyncio.to_thread(_fetch_visible_events, user_id, last_id)
             for event in events:
                 last_id = max(last_id, int(event["id"]))
