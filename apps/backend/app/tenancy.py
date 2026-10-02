@@ -85,6 +85,7 @@ class TenantMetaWrite(BaseModel):
     app_secret: SecretStr | None = None
     page_id: str | None = Field(default=None, max_length=200)
     page_access_token: SecretStr | None = None
+    webhook_verify_token: SecretStr | None = None
     graph_api_version: str = Field(default="v24.0", max_length=32)
 
 
@@ -708,6 +709,8 @@ def tenant_meta_status(admin: User = Depends(tenant_admin), db: Session = Depend
         "app_secret_configured": bool(tenant_setting(db, tenant_id, "meta.app_secret")),
         "page_id": tenant_setting(db, tenant_id, "meta.page_id"),
         "page_access_token_configured": bool(token),
+        "webhook_verify_token_configured": bool(tenant_setting(db, tenant_id, "meta.webhook_verify_token")),
+        "webhook_callback_url": (os.getenv("PUBLIC_BACKEND_URL", "http://localhost:8000").rstrip("/") + "/api/v1/meta/webhook"),
         "graph_api_version": tenant_setting(db, tenant_id, "meta.graph_api_version") or "v24.0",
         "connected": tenant_setting(db, tenant_id, "meta.connected") == "true",
         "page_name": tenant_setting(db, tenant_id, "meta.page_name"),
@@ -725,6 +728,8 @@ def save_tenant_meta(payload: TenantMetaWrite, admin: User = Depends(tenant_admi
         set_tenant_setting(db, tenant_id, "meta.app_secret", payload.app_secret.get_secret_value(), encrypted=True)
     if payload.page_access_token is not None:
         set_tenant_setting(db, tenant_id, "meta.page_access_token", payload.page_access_token.get_secret_value(), encrypted=True)
+    if payload.webhook_verify_token is not None:
+        set_tenant_setting(db, tenant_id, "meta.webhook_verify_token", payload.webhook_verify_token.get_secret_value(), encrypted=True)
     set_tenant_setting(db, tenant_id, "meta.connected", "false")
     db.add(AuditLog(actor_user_id=admin.id, action="tenant.meta_updated", entity_type="tenant", entity_id=str(tenant_id)))
     db.commit()
