@@ -546,6 +546,38 @@ def test_advertising_workflow_smoke():
         assert entry_one["raw_likes"] == 2
         assert entry_one["valid_likes"] == 2
 
+        certified = client.post(
+            f"/api/v1/campaigns/{competition_id}/competition/certify",
+            headers=auth(alpha_token),
+        )
+        assert certified.status_code == 201, certified.text
+        assert certified.json()["frozen"] is True
+        assert len(certified.json()["snapshot_sha256"]) == 64
+
+        frozen_import = client.post(
+            f"/api/v1/campaigns/{competition_id}/competition/import",
+            headers=auth(alpha_token),
+            json={"comments": []},
+        )
+        assert frozen_import.status_code == 409
+        assert "frozen" in frozen_import.json()["detail"].lower()
+
+        certificate_pdf = client.get(
+            f"/api/v1/campaigns/{competition_id}/competition/certificate.pdf",
+            headers=auth(alpha_token),
+        )
+        assert certificate_pdf.status_code == 200, certificate_pdf.text
+        assert certificate_pdf.headers["content-type"] == "application/pdf"
+        assert certificate_pdf.content.startswith(b"%PDF")
+
+        certified_results = client.get(
+            f"/api/v1/campaigns/{competition_id}/competition/results",
+            headers=auth(alpha_token),
+        )
+        assert certified_results.status_code == 200
+        assert certified_results.json()["certification"]["frozen"] is True
+        assert certified_results.json()["certification"]["snapshot_sha256"] == certified.json()["snapshot_sha256"]
+
         cross_tenant_results = client.get(
             f"/api/v1/campaigns/{competition_id}/competition/results",
             headers=auth(beta_token),
