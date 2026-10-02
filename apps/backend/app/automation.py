@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .models import AutomationJobState, User, UserRole
+from .models import AutomationJobState, SystemSetting, User, UserRole
 from .realtime import emit_realtime_event
 from .security import validate_token_user
 
@@ -125,3 +125,21 @@ def list_automation_jobs(_: User = Depends(platform_admin), db: Session = Depend
         "failure_count": row.failure_count,
         "due": job_due(row, now),
     } for row in rows]
+
+
+@router.get("/api/v1/admin/platform-health")
+def platform_health(_: User = Depends(platform_admin), db: Session = Depends(get_db)):
+    keys = [
+        "health.backup.status",
+        "health.backup.detail",
+        "health.backup.checked_at",
+    ]
+    rows = list(db.scalars(select(SystemSetting).where(SystemSetting.key.in_(keys))))
+    values = {row.key: row.value for row in rows}
+    return {
+        "backup": {
+            "status": values.get("health.backup.status"),
+            "detail": values.get("health.backup.detail"),
+            "checked_at": values.get("health.backup.checked_at"),
+        }
+    }
