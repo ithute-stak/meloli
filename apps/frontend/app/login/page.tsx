@@ -10,13 +10,14 @@ export default function LoginPage(){
   const router = useRouter();
   const [email,setEmail]=useState("");
   const [password,setPassword]=useState("");
+  const [otpCode,setOtpCode]=useState("");
   const [error,setError]=useState("");
   const [loading,setLoading]=useState(false);
 
   async function submit(event:FormEvent){
     event.preventDefault(); setError(""); setLoading(true);
     try{
-      const auth=await api<AuthResponse>("/api/v1/auth/login",{method:"POST",body:JSON.stringify({email,password})});
+      const auth=await api<AuthResponse>("/api/v1/auth/login",{method:"POST",body:JSON.stringify({email,password,otp_code:otpCode||null})});
       saveSession(auth);
       router.push(auth.user.role==="advertiser"?"/advertiser":"/dashboard");
     }catch(err){setError(err instanceof Error?err.message:"Unable to sign in");}
@@ -38,6 +39,7 @@ export default function LoginPage(){
         <form className="mt-8 space-y-5" onSubmit={submit}>
           <label className="block"><span className="mb-2 block text-sm font-bold text-slate-700">Email address</span><div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 shadow-sm focus-within:border-[#070a45]"><Mail size={18} className="text-slate-400"/><input className="h-14 w-full outline-none" type="email" placeholder="you@example.com" value={email} onChange={e=>setEmail(e.target.value)} required/></div></label>
           <label className="block"><div className="mb-2 flex items-center justify-between"><span className="text-sm font-bold text-slate-700">Password</span><span className="text-xs font-bold text-slate-400">Secure sign in</span></div><div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 shadow-sm focus-within:border-[#070a45]"><LockKeyhole size={18} className="text-slate-400"/><input className="h-14 w-full outline-none" type="password" placeholder="••••••••" value={password} onChange={e=>setPassword(e.target.value)} required/></div></label>
+          <label className="block"><div className="mb-2 flex items-center justify-between"><span className="text-sm font-bold text-slate-700">Authenticator code</span><span className="text-xs font-bold text-slate-400">Staff 2FA only</span></div><div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 shadow-sm focus-within:border-[#070a45]"><LockKeyhole size={18} className="text-slate-400"/><input className="h-14 w-full tracking-[.25em] outline-none" inputMode="numeric" autoComplete="one-time-code" placeholder="000000" value={otpCode} onChange={e=>setOtpCode(e.target.value.replace(/\D/g,"").slice(0,8))}/></div></label>
           {error&&<div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{error}</div>}
           <button disabled={loading} className="flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-[#070a45] font-extrabold text-white shadow-lg shadow-indigo-950/20 disabled:opacity-60">{loading&&<Loader2 size={18} className="animate-spin"/>}{loading?"Signing in...":"Sign in"}</button>
         </form>
