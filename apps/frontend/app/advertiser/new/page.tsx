@@ -22,7 +22,7 @@ export default function NewCampaign(){
   useEffect(()=>{
     const user=getSessionUser();
     if(!user||user.role!=="advertiser"){router.replace("/login");return;}
-    api<Package[]>("/api/v1/packages").then(data=>{setPackages(data);if(data[0])setForm(v=>({...v,package_code:data[0].code}));}).catch(e=>setError(e.message));
+    api<Package[]>("/api/v1/packages",{},true).then(data=>{setPackages(data);if(data[0])setForm(v=>({...v,package_code:data[0].code}));}).catch(e=>setError(e.message));
   },[router]);
 
   const change=(key:string,value:string)=>setForm(v=>({...v,[key]:value}));
