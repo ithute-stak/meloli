@@ -10,7 +10,7 @@ from .competition import sync_published_competitions
 from .commercial import expire_subscriptions, generate_monthly_corporate_invoices, process_commercial_alerts
 from .tenant_billing import process_tenant_subscription_lifecycle
 from .meta_service import MetaError, publish_campaign as publish_to_meta
-from .models import Campaign, CampaignStatus, PublicationAttempt, PublicationStatus, SystemSetting, Tenant
+from .models import AuditLog, Campaign, CampaignStatus, PublicationAttempt, PublicationStatus, SystemSetting, Tenant, User, UserRole
 from .security import decrypt_secret
 
 
@@ -19,6 +19,23 @@ def setting(db, key: str) -> str | None:
     if not row or not row.value:
         return None
     return decrypt_secret(row.value) if row.encrypted else row.value
+
+
+def notify_tenant_staff(db, campaign: Campaign, kind: str, title: str, message: str) -> None:
+    if not campaign.tenant_id:
+        return
+    staff = list(db.scalars(
+        select(User).where(
+            User.tenant_id == campaign.tenant_id,
+            User.is_active.is_(True),
+            (
+                (User.is_tenant_admin.is_(True))
+                | (User.role.in_([UserRole.REVIEWER, UserRole.PUBLISHER]))
+            ),
+        )
+    ))
+    for user in staff:
+        enqueue_notification(db, user.id, kind, title, message)
 
 
 def run_once() -> int:
@@ -47,16 +64,20 @@ def run_once() -> int:
 
         for campaign in due:
             from .tenancy import tenant_setting
-            page_id = tenant_setting(db, campaign.tenant_id, "meta.page_id") if campaign.tenant_id else None
-            token = tenant_setting(db, campaign.tenant_id, "meta.page_access_token") if campaign.tenant_id else None
-            version = tenant_setting(db, campaign.tenant_id, "meta.graph_api_version") if campaign.tenant_id else None
-            page_id = page_id or setting(db, "meta.page_id")
-            token = token or setting(db, "meta.page_access_token")
-            version = version or setting(db, "meta.graph_api_version")
             tenant = db.get(Tenant, campaign.tenant_id) if campaign.tenant_id else None
-            portal_name = tenant.name if tenant else "Meloli Airwaves"
-            if not page_id or not token or not version:
-                continue
+            portal_name = tenant.name if tenant else "Advertising Portal"
+
+            # Tenant campaigns must never fall back to another Page's Meta
+            # credentials. Global settings are retained only for legacy
+            # unscoped campaigns.
+            if campaign.tenant_id:
+                page_id = tenant_setting(db, campaign.tenant_id, "meta.page_id")
+                token = tenant_setting(db, campaign.tenant_id, "meta.page_access_token")
+                version = tenant_setting(db, campaign.tenant_id, "meta.graph_api_version") or "v24.0"
+            else:
+                page_id = setting(db, "meta.page_id")
+                token = setting(db, "meta.page_access_token")
+                version = setting(db, "meta.graph_api_version")
 
             previous = db.scalar(select(func.count(PublicationAttempt.id)).where(PublicationAttempt.campaign_id == campaign.id)) or 0
             max_attempts = max(1, int(os.getenv("PUBLISH_RETRY_MAX_ATTEMPTS", "5")))
@@ -69,14 +90,9 @@ def run_once() -> int:
             if previous >= max_attempts:
                 if campaign.publishing_retry_exhausted_at is None:
                     campaign.publishing_retry_exhausted_at = datetime.now(timezone.utc)
-                    enqueue_notification(
-                        db,
-                        campaign.advertiser_id,
-                        "publishing_failed",
-                        "Publishing needs staff attention",
-                        f"{campaign.title} reached the automatic publishing retry limit on {portal_name}. Staff must resolve the Meta configuration or content issue before retrying.",
-                    )
-                    from .models import AuditLog
+                    message = f"{campaign.title} reached the automatic publishing retry limit on {portal_name}. Resolve the tenant Meta configuration or content issue, then use manual retry."
+                    enqueue_notification(db, campaign.advertiser_id, "publishing_failed", "Publishing needs staff attention", message)
+                    notify_tenant_staff(db, campaign, "publishing_failed", "Publishing retry limit reached", message)
                     db.add(AuditLog(actor_user_id=None, action="campaign.publish_retry_exhausted", entity_type="campaign", entity_id=str(campaign.id), detail=f"{previous} attempts"))
                     db.commit()
                 continue
@@ -94,6 +110,8 @@ def run_once() -> int:
             db.add(attempt)
             db.flush()
             try:
+                if not page_id or not token or not version:
+                    raise MetaError("This tenant's Meta Page publishing configuration is incomplete")
                 result = publish_to_meta(
                     page_id=page_id,
                     access_token=token,
@@ -124,12 +142,20 @@ def run_once() -> int:
             except MetaError as exc:
                 attempt.status = PublicationStatus.FAILED
                 attempt.error_message = str(exc)[:4000]
+                message = f"{campaign.title} could not be published at the scheduled time on {portal_name}. Automatic retry {int(previous) + 1} of {max_attempts} failed: {str(exc)[:240]}"
                 enqueue_notification(
                     db,
                     campaign.advertiser_id,
                     "publishing_delay",
                     "Publishing delayed",
-                    f"{campaign.title} could not be published at the scheduled time. {portal_name} staff have been alerted and will retry.",
+                    message,
+                )
+                notify_tenant_staff(
+                    db,
+                    campaign,
+                    "publishing_delay",
+                    "Scheduled publishing failed",
+                    message,
                 )
             db.commit()
         return processed
