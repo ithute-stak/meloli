@@ -23,6 +23,10 @@ class PartnerWrite(BaseModel):
     active: bool = True
 
 
+class PartnerState(BaseModel):
+    active: bool
+
+
 class PayoutWrite(BaseModel):
     amount: float = Field(gt=0)
     reference: str | None = Field(default=None, max_length=160)
@@ -101,6 +105,17 @@ def _partner_metrics(db: Session, partner: ReferralPartner) -> dict:
 def list_partners(_: User = Depends(super_admin), db: Session = Depends(get_db)):
     rows = list(db.scalars(select(ReferralPartner).order_by(ReferralPartner.created_at.desc())))
     return [_partner_metrics(db, row) for row in rows]
+
+
+@router.patch("/api/v1/admin/referral-partners/{partner_id}/state")
+def set_partner_state(partner_id: int, payload: PartnerState, admin: User = Depends(super_admin), db: Session = Depends(get_db)):
+    partner = db.get(ReferralPartner, partner_id)
+    if not partner:
+        raise HTTPException(status_code=404, detail="Referral partner not found")
+    partner.active = payload.active
+    audit(db, admin, "referral_partner.enabled" if payload.active else "referral_partner.disabled", "referral_partner", partner.id, partner.code)
+    db.commit()
+    return {"id": partner.id, "active": partner.active}
 
 
 @router.post("/api/v1/admin/referral-partners/{partner_id}/payouts", status_code=201)
