@@ -5,6 +5,7 @@ from .engagement import router as engagement_router
 from .commercial import router as commercial_router
 from .communications import router as communications_router
 from .branding import router as branding_router
+from .lifecycle import router as lifecycle_router
 
 # Keep the established core application intact while composing newer feature
 # routers in one production entry point.
@@ -14,3 +15,4 @@ app.include_router(engagement_router)
 app.include_router(commercial_router)
 app.include_router(communications_router)
 app.include_router(branding_router)
+app.include_router(lifecycle_router)
