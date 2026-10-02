@@ -131,7 +131,7 @@ def _send_email(db: Session, notification: Notification, user: User) -> None:
         smtp.send_message(msg)
 
 
-def send_direct_email(db: Session, recipient: str, subject: str, body: str, attachment: bytes | None = None, attachment_name: str | None = None) -> None:
+def send_direct_email(db: Session, recipient: str, subject: str, body: str, attachment: bytes | None = None, attachment_name: str | None = None, tenant_id: int | None = None) -> None:
     host = setting(db, "notifications.smtp_host")
     from_email = setting(db, "notifications.from_email")
     if not host or not from_email:
@@ -141,8 +141,16 @@ def send_direct_email(db: Session, recipient: str, subject: str, body: str, atta
     password = setting(db, "notifications.smtp_password")
     use_tls = bool_setting(db, "notifications.smtp_use_tls")
     msg = EmailMessage()
+    sender_name = "Advertising Portal"
+    if tenant_id is not None:
+        tenant = db.get(Tenant, tenant_id)
+        if tenant:
+            sender_name = tenant.name
+            row = db.scalar(select(TenantSetting).where(TenantSetting.tenant_id == tenant_id, TenantSetting.key == "branding.email_sender_name").order_by(TenantSetting.id.desc()))
+            if row and row.value:
+                sender_name = row.value
     msg["Subject"] = subject
-    msg["From"] = from_email
+    msg["From"] = f"{sender_name} <{from_email}>"
     msg["To"] = recipient
     msg.set_content(body)
     if attachment is not None:
