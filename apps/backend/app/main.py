@@ -1,9 +1,10 @@
 import io
 import os
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import Depends, FastAPI, HTTPException, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from reportlab.lib import colors
@@ -20,6 +21,7 @@ from .media import router as media_router
 from .meta_service import MetaError, publish_campaign as publish_to_meta, verify_page
 from .models import (
     AdvertiserSubscription,
+    AuthSession,
     AdvertisingPackage,
     AuditLog,
     CorporateAccount,
@@ -201,7 +203,7 @@ def health():
 
 
 @app.post("/api/v1/auth/register", response_model=AuthToken, status_code=201)
-def register(payload: UserRegister, db: Session = Depends(get_db)):
+def register(payload: UserRegister, request: Request, db: Session = Depends(get_db)):
     email = payload.email.lower()
     if db.scalar(select(User).where(User.email == email)):
         raise HTTPException(status_code=409, detail="An account already exists for this email")
@@ -209,13 +211,15 @@ def register(payload: UserRegister, db: Session = Depends(get_db)):
     db.add(user)
     db.flush()
     audit(db, user, "account.registered", "user", user.id)
+    session_key = secrets.token_urlsafe(24)
+    db.add(AuthSession(user_id=user.id, session_key=session_key, user_agent=request.headers.get("user-agent"), ip_address=request.client.host if request.client else None))
     db.commit()
     db.refresh(user)
-    return AuthToken(access_token=create_access_token(user.id, user.role.value, user.auth_version or 0), user=user)
+    return AuthToken(access_token=create_access_token(user.id, user.role.value, user.auth_version or 0, session_key), user=user)
 
 
 @app.post("/api/v1/auth/login", response_model=AuthToken)
-def login(payload: UserLogin, db: Session = Depends(get_db)):
+def login(payload: UserLogin, request: Request, db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.email == payload.email.lower()))
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -229,7 +233,10 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
         secret = decrypt_secret(user.totp_secret)
         if not pyotp.TOTP(secret).verify(payload.otp_code, valid_window=1):
             raise HTTPException(status_code=401, detail="Invalid two-factor authentication code")
-    return AuthToken(access_token=create_access_token(user.id, user.role.value, user.auth_version or 0), user=user)
+    session_key = secrets.token_urlsafe(24)
+    db.add(AuthSession(user_id=user.id, session_key=session_key, user_agent=request.headers.get("user-agent"), ip_address=request.client.host if request.client else None))
+    db.commit()
+    return AuthToken(access_token=create_access_token(user.id, user.role.value, user.auth_version or 0, session_key), user=user)
 
 
 @app.get("/api/v1/auth/me", response_model=UserOut)
