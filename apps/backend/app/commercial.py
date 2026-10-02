@@ -11,7 +11,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
-from .branding import LIGHT, MUTED, NAVY, RED, draw_footer, draw_header, info_label
+from .branding import LIGHT, MUTED, NAVY, RED, draw_footer, draw_header, info_label, tenant_brand
 from .communications import send_direct_email
 from .db import get_db
 from .models import AdvertiserSubscription, AdvertisingPackage, AuditLog, Campaign, CorporateAccount, CorporateCreditNote, CorporateInvoice, CorporateInvoiceLine, CorporateSettlement, Notification, Payment, PaymentStatus, PromoCode, SubscriptionPlan, User, UserRole
@@ -310,12 +310,15 @@ def corporate_statement(user_id: int, _: User = Depends(super_admin), db: Sessio
 @router.get("/api/v1/admin/advertisers/{user_id}/corporate/statement.pdf")
 def corporate_statement_pdf(user_id: int, _: User = Depends(super_admin), db: Session = Depends(get_db)):
     data = corporate_statement(user_id, _, db)
+    statement_user = db.get(User, user_id)
+    tenant_id = statement_user.tenant_id if statement_user else None
+    brand_name, _, _ = tenant_brand(db, tenant_id)
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
     document_no = f"STM-MEL-{user_id:06d}"
-    pdf.setTitle(f"Meloli corporate statement {document_no}")
-    draw_header(pdf, db, "Corporate statement", document_no, "ACCOUNT")
+    pdf.setTitle(f"{brand_name} corporate statement {document_no}")
+    draw_header(pdf, db, "Corporate statement", document_no, "ACCOUNT", tenant_id=tenant_id)
 
     top = height - 154
     pdf.setFillColor(LIGHT)
@@ -358,9 +361,9 @@ def corporate_statement_pdf(user_id: int, _: User = Depends(super_admin), db: Se
     pdf.setFont("Helvetica", 8)
     for tx in data["transactions"]:
         if y < 92:
-            draw_footer(pdf)
+            draw_footer(pdf, db, tenant_id)
             pdf.showPage()
-            draw_header(pdf, db, "Corporate statement", document_no, "ACCOUNT")
+            draw_header(pdf, db, "Corporate statement", document_no, "ACCOUNT", tenant_id=tenant_id)
             y = height - 160
         created = tx["created_at"]
         created_text = created.strftime("%d %b %Y") if hasattr(created, "strftime") else str(created)[:10]
@@ -387,7 +390,7 @@ def corporate_statement_pdf(user_id: int, _: User = Depends(super_admin), db: Se
     pdf.setFont("Helvetica", 8)
     pdf.drawRightString(width - 60, 92, "Please quote the advertiser account when settling this balance.")
 
-    draw_footer(pdf)
+    draw_footer(pdf, db, tenant_id)
     pdf.save()
     buffer.seek(0)
     return Response(
@@ -604,8 +607,9 @@ def _corporate_invoice_response(invoice: CorporateInvoice, account: CorporateAcc
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
-    pdf.setTitle(f"Meloli corporate invoice {invoice.invoice_number}")
-    draw_header(pdf, db, "Corporate invoice", invoice.invoice_number, invoice.status.upper())
+    brand_name, _, _ = tenant_brand(db, user.tenant_id)
+    pdf.setTitle(f"{brand_name} corporate invoice {invoice.invoice_number}")
+    draw_header(pdf, db, "Corporate invoice", invoice.invoice_number, invoice.status.upper(), tenant_id=user.tenant_id)
 
     top = height - 154
     pdf.setFillColor(LIGHT)
@@ -629,7 +633,7 @@ def _corporate_invoice_response(invoice: CorporateInvoice, account: CorporateAcc
     pdf.drawRightString(width - 58, y, f"{invoice.currency} {float(invoice.amount):,.2f}")
     pdf.setFillColor(MUTED)
     pdf.setFont("Helvetica", 8.5)
-    pdf.drawString(58, y - 16, "Advertising charged to the approved Meloli corporate credit account.")
+    pdf.drawString(58, y - 16, f"Advertising charged to the approved {brand_name} corporate credit account.")
     pdf.setStrokeColor(colors.HexColor("#EEF0F5"))
     pdf.line(46, y - 30, width - 46, y - 30)
 
@@ -655,14 +659,14 @@ def _corporate_invoice_response(invoice: CorporateInvoice, account: CorporateAcc
     pdf.setFillColor(NAVY)
     pdf.setFont("Helvetica", 8)
     pdf.drawString(60, 132, f"Please quote invoice number {invoice.invoice_number} when making payment.")
-    pdf.drawString(60, 118, "This invoice is generated from the Meloli Airwaves corporate advertising account.")
+    pdf.drawString(60, 118, f"This invoice is generated from the {brand_name} corporate advertising account.")
 
-    draw_footer(pdf)
+    draw_footer(pdf, db, user.tenant_id)
     pdf.save()
     return Response(
         buffer.getvalue(),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="meloli-{invoice.invoice_number.lower()}.pdf"'},
+        headers={"Content-Disposition": f'attachment; filename="{invoice.invoice_number.lower()}.pdf"'},
     )
 
 
@@ -670,8 +674,9 @@ def _credit_note_response(note: CorporateCreditNote, account: CorporateAccount, 
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
-    pdf.setTitle(f"Meloli credit note {note.credit_note_number}")
-    draw_header(pdf, db, "Credit note", note.credit_note_number, "CREDIT")
+    brand_name, _, _ = tenant_brand(db, user.tenant_id)
+    pdf.setTitle(f"{brand_name} credit note {note.credit_note_number}")
+    draw_header(pdf, db, "Credit note", note.credit_note_number, "CREDIT", tenant_id=user.tenant_id)
 
     invoice = db.get(CorporateInvoice, note.invoice_id) if note.invoice_id else None
     payment = db.get(Payment, note.payment_id)
@@ -722,15 +727,15 @@ def _credit_note_response(note: CorporateCreditNote, account: CorporateAccount, 
     pdf.drawString(60, 146, "CREDIT NOTE ISSUED")
     pdf.setFillColor(NAVY)
     pdf.setFont("Helvetica", 8)
-    pdf.drawString(60, 130, "This document records an approved refund or credit against the Meloli corporate advertising account.")
+    pdf.drawString(60, 130, f"This document records an approved refund or credit against the {brand_name} corporate advertising account.")
     pdf.drawString(60, 117, "Keep this credit note together with the original invoice and payment records.")
 
-    draw_footer(pdf)
+    draw_footer(pdf, db, user.tenant_id)
     pdf.save()
     return Response(
         buffer.getvalue(),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="meloli-{note.credit_note_number.lower()}.pdf"'},
+        headers={"Content-Disposition": f'attachment; filename="{note.credit_note_number.lower()}.pdf"'},
     )
 
 
@@ -1022,8 +1027,9 @@ def corporate_invoice_pdf(user_id: int, _: User = Depends(super_admin), db: Sess
     pdf = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
     document_no = f"CORP-INV-MEL-{account.id:06d}-{datetime.now(timezone.utc).strftime('%Y%m')}"
-    pdf.setTitle(f"Meloli corporate invoice {document_no}")
-    draw_header(pdf, db, "Corporate invoice", document_no, "OVERDUE" if status_info["overdue"] else "PAYMENT DUE")
+    brand_name, _, _ = tenant_brand(db, user.tenant_id)
+    pdf.setTitle(f"{brand_name} corporate invoice {document_no}")
+    draw_header(pdf, db, "Corporate invoice", document_no, "OVERDUE" if status_info["overdue"] else "PAYMENT DUE", tenant_id=user.tenant_id)
 
     top = height - 154
     pdf.setFillColor(LIGHT)
@@ -1047,7 +1053,7 @@ def corporate_invoice_pdf(user_id: int, _: User = Depends(super_admin), db: Sess
     pdf.drawRightString(width - 58, y, f"LSL {status_info['outstanding']:,.2f}")
     pdf.setFillColor(MUTED)
     pdf.setFont("Helvetica", 8.5)
-    pdf.drawString(58, y - 16, "Advertising services charged to the approved Meloli corporate credit account.")
+    pdf.drawString(58, y - 16, f"Advertising services charged to the approved {brand_name} corporate credit account.")
     pdf.setStrokeColor(colors.HexColor("#EEF0F5"))
     pdf.line(46, y - 30, width - 46, y - 30)
 
@@ -1074,12 +1080,12 @@ def corporate_invoice_pdf(user_id: int, _: User = Depends(super_admin), db: Sess
     pdf.drawString(60, 136, note[:96])
     pdf.drawString(60, 120, "Use the corporate advertiser name and invoice number as the payment reference.")
 
-    draw_footer(pdf)
+    draw_footer(pdf, db, user.tenant_id)
     pdf.save()
     return Response(
         buffer.getvalue(),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="meloli-corporate-invoice-{user_id}.pdf"'},
+        headers={"Content-Disposition": f'attachment; filename="corporate-invoice-{user_id}.pdf"'},
     )
 
 
@@ -1097,8 +1103,9 @@ def corporate_settlement_receipt(settlement_id: int, _: User = Depends(super_adm
     pdf = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
     document_no = f"CORP-RCT-MEL-{settlement.id:06d}"
-    pdf.setTitle(f"Meloli corporate receipt {document_no}")
-    draw_header(pdf, db, "Corporate receipt", document_no, "PAID")
+    brand_name, _, _ = tenant_brand(db, user.tenant_id)
+    pdf.setTitle(f"{brand_name} corporate receipt {document_no}")
+    draw_header(pdf, db, "Corporate receipt", document_no, "PAID", tenant_id=user.tenant_id)
     top = height - 154
     pdf.setFillColor(LIGHT)
     pdf.roundRect(46, top - 92, width - 92, 92, 14, fill=1, stroke=0)
@@ -1127,14 +1134,14 @@ def corporate_settlement_receipt(settlement_id: int, _: User = Depends(super_adm
     pdf.drawString(60, 142, "CORPORATE PAYMENT CONFIRMED")
     pdf.setFillColor(NAVY)
     pdf.setFont("Helvetica", 8)
-    pdf.drawString(60, 126, "This receipt confirms settlement against the Meloli corporate advertising credit account.")
+    pdf.drawString(60, 126, f"This receipt confirms settlement against the {brand_name} corporate advertising credit account.")
 
-    draw_footer(pdf)
+    draw_footer(pdf, db, user.tenant_id)
     pdf.save()
     return Response(
         buffer.getvalue(),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="meloli-corporate-receipt-{settlement.id}.pdf"'},
+        headers={"Content-Disposition": f'attachment; filename="corporate-receipt-{settlement.id}.pdf"'},
     )
 
 
