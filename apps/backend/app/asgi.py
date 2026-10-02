@@ -10,6 +10,7 @@ from .growth import router as growth_router
 from .corporate_api import router as corporate_api_router
 from .tenancy import router as tenancy_router
 from .competition import router as competition_router
+from .tenant_billing import router as tenant_billing_router
 
 # Keep the established core application intact while composing newer feature
 # routers in one production entry point.
@@ -26,3 +27,4 @@ app.include_router(corporate_api_router)
 
 app.include_router(tenancy_router)
 app.include_router(competition_router)
+app.include_router(tenant_billing_router)
