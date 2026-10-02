@@ -109,6 +109,30 @@ def test_advertising_workflow_smoke():
         assert admin_login.status_code == 200, admin_login.text
         admin_token = admin_login.json()["access_token"]
 
+        referral_partner = client.post(
+            "/api/v1/admin/referral-partners",
+            headers=auth(admin_token),
+            json={"name": "Agency Partner", "code": "AGENCY10", "commission_percent": 10, "contact_email": "partner@example.com", "active": True},
+        )
+        assert referral_partner.status_code == 201, referral_partner.text
+
+        referred_register = client.post(
+            "/api/v1/auth/register",
+            json={
+                "full_name": "Referred Advertiser",
+                "business_name": "Referral Test",
+                "email": "referred@example.com",
+                "phone": "+26652222222",
+                "password": "ReferredPassword123!",
+                "referral_code": "AGENCY10",
+            },
+        )
+        assert referred_register.status_code == 201, referred_register.text
+        referral_metrics = client.get("/api/v1/admin/referral-partners", headers=auth(admin_token))
+        assert referral_metrics.status_code == 200, referral_metrics.text
+        partner_metrics = next(row for row in referral_metrics.json() if row["code"] == "AGENCY10")
+        assert partner_metrics["referred_advertisers"] == 1
+
         promo = client.post(
             "/api/v1/admin/promos",
             headers=auth(admin_token),
@@ -131,6 +155,27 @@ def test_advertising_workflow_smoke():
         )
         assert corporate.status_code == 200, corporate.text
         assert corporate.json()["credit_limit"] == 2000
+
+        api_client = client.post(
+            "/api/v1/admin/corporate-api/clients",
+            headers=auth(admin_token),
+            json={"user_id": register.json()["user"]["id"], "name": "Smoke Integration", "webhook_url": None},
+        )
+        assert api_client.status_code == 201, api_client.text
+        corporate_api_key = api_client.json()["api_key"]
+        corporate_api_client_id = api_client.json()["id"]
+
+        api_campaign = client.post(
+            "/api/v1/corporate-api/campaigns",
+            headers={"X-API-Key": corporate_api_key},
+            json={"title": "API submitted advert", "caption": "Created through corporate API", "package_code": package_code, "media_items": []},
+        )
+        assert api_campaign.status_code == 201, api_campaign.text
+        assert api_campaign.json()["status"] == "submitted"
+
+        api_campaigns = client.get("/api/v1/corporate-api/campaigns", headers={"X-API-Key": corporate_api_key})
+        assert api_campaigns.status_code == 200, api_campaigns.text
+        assert any(row["id"] == api_campaign.json()["id"] for row in api_campaigns.json())
 
         plan = client.post(
             "/api/v1/admin/subscription-plans",
@@ -216,6 +261,20 @@ def test_advertising_workflow_smoke():
         assert summary.status_code == 200
         assert summary.json()["campaigns"] >= 1
         assert summary.json()["paid_payments"] >= 1
+
+        forecast = client.get("/api/v1/admin/growth/forecast", headers=auth(admin_token))
+        assert forecast.status_code == 200, forecast.text
+        assert forecast.json()["forecast_next_30_days"] >= 0
+
+        revoke_api = client.patch(
+            f"/api/v1/admin/corporate-api/clients/{corporate_api_client_id}/state",
+            headers=auth(admin_token),
+            json={"active": False},
+        )
+        assert revoke_api.status_code == 200, revoke_api.text
+        assert revoke_api.json()["active"] is False
+        revoked_api_use = client.get("/api/v1/corporate-api/campaigns", headers={"X-API-Key": corporate_api_key})
+        assert revoked_api_use.status_code == 401
 
         advertiser_performance = client.get("/api/v1/advertiser/performance/summary", headers=auth(advertiser_token))
         assert advertiser_performance.status_code == 200
