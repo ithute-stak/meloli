@@ -377,6 +377,119 @@ def test_advertising_workflow_smoke():
         assert credit_pdf.status_code == 200, credit_pdf.text
         assert credit_pdf.content.startswith(b"%PDF")
 
+        # Multi-tenant isolation and one-person/one-comment competition voting.
+        tenant_a = client.post(
+            "/api/v1/tenants/register",
+            json={
+                "page_name": "Page Alpha",
+                "desired_slug": "page-alpha",
+                "owner_name": "Alpha Owner",
+                "owner_email": "alpha.owner@example.com",
+                "owner_phone": "+26650000001",
+                "password": "AlphaOwnerPassword123!",
+            },
+        )
+        assert tenant_a.status_code == 201, tenant_a.text
+        assert tenant_a.json()["slug"] == "page-alpha"
+        assert "/p/page-alpha" in tenant_a.json()["generated_url"]
+
+        tenant_b = client.post(
+            "/api/v1/tenants/register",
+            json={
+                "page_name": "Page Beta",
+                "desired_slug": "page-beta",
+                "owner_name": "Beta Owner",
+                "owner_email": "beta.owner@example.com",
+                "owner_phone": "+26650000002",
+                "password": "BetaOwnerPassword123!",
+            },
+        )
+        assert tenant_b.status_code == 201, tenant_b.text
+
+        resolved_a = client.get("/api/v1/tenants/resolve?slug=page-alpha")
+        assert resolved_a.status_code == 200, resolved_a.text
+        assert resolved_a.json()["name"] == "Page Alpha"
+
+        alpha_login = client.post(
+            "/api/v1/auth/login",
+            json={"email": "alpha.owner@example.com", "password": "AlphaOwnerPassword123!"},
+        )
+        beta_login = client.post(
+            "/api/v1/auth/login",
+            json={"email": "beta.owner@example.com", "password": "BetaOwnerPassword123!"},
+        )
+        assert alpha_login.status_code == 200, alpha_login.text
+        assert beta_login.status_code == 200, beta_login.text
+        alpha_token = alpha_login.json()["access_token"]
+        beta_token = beta_login.json()["access_token"]
+        assert alpha_login.json()["user"]["is_tenant_admin"] is True
+        assert alpha_login.json()["user"]["tenant_id"] != beta_login.json()["user"]["tenant_id"]
+
+        alpha_campaign = client.post(
+            "/api/v1/campaigns",
+            headers=auth(alpha_token),
+            json={
+                "title": "Comment voting competition",
+                "caption": "Vote by liking one comment only",
+                "package_code": package_code,
+                "engagement_mode": "competition_one_comment",
+            },
+        )
+        assert alpha_campaign.status_code == 201, alpha_campaign.text
+        competition_id = alpha_campaign.json()["id"]
+        assert alpha_campaign.json()["engagement_mode"] == "competition_one_comment"
+
+        imported_votes = client.post(
+            f"/api/v1/campaigns/{competition_id}/competition/import",
+            headers=auth(alpha_token),
+            json={
+                "comments": [
+                    {
+                        "comment_id": "comment-1",
+                        "message": "Entry One",
+                        "author_name": "Contestant One",
+                        "reactions": [
+                            {"user_id": "theko", "user_name": "Koetlisi Theko"},
+                            {"user_id": "mpho", "user_name": "Mpho"},
+                        ],
+                    },
+                    {
+                        "comment_id": "comment-3",
+                        "message": "Entry Three",
+                        "author_name": "Contestant Three",
+                        "reactions": [
+                            {"user_id": "theko", "user_name": "Koetlisi Theko"},
+                            {"user_id": "palesa", "user_name": "Palesa"},
+                        ],
+                    },
+                ]
+            },
+        )
+        assert imported_votes.status_code == 200, imported_votes.text
+        vote_data = imported_votes.json()
+        assert vote_data["summary"]["raw_likes"] == 4
+        assert vote_data["summary"]["valid_likes"] == 2
+        assert vote_data["summary"]["invalid_likes"] == 2
+        assert vote_data["summary"]["disqualified_people"] == 1
+        theko = next(row for row in vote_data["disqualified_people"] if row["user_name"] == "Koetlisi Theko")
+        assert theko["comments_liked"] == 2
+        assert all(row["valid_likes"] == 1 for row in vote_data["comments"])
+
+        cross_tenant_results = client.get(
+            f"/api/v1/campaigns/{competition_id}/competition/results",
+            headers=auth(beta_token),
+        )
+        assert cross_tenant_results.status_code == 403
+
+        domain_request = client.post(
+            "/api/v1/tenant-admin/domains",
+            headers=auth(alpha_token),
+            json={"hostname": "ads.page-alpha.example"},
+        )
+        assert domain_request.status_code == 201, domain_request.text
+        assert domain_request.json()["status"] == "pending"
+        assert domain_request.json()["verification_token"].startswith("meloli-")
+
         two_factor_setup = client.post("/api/v1/profile/2fa/setup", headers=auth(admin_token))
         assert two_factor_setup.status_code == 200, two_factor_setup.text
         otp_secret = two_factor_setup.json()["secret"]
