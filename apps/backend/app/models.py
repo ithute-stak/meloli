@@ -354,6 +354,7 @@ class CorporateCreditNote(Base):
     payment_id: Mapped[int] = mapped_column(ForeignKey("payments.id"), index=True)
     refund_request_id: Mapped[int | None] = mapped_column(ForeignKey("refund_requests.id"), nullable=True, unique=True, index=True)
     amount: Mapped[float] = mapped_column(Numeric(12, 2))
+    applied_to_invoice_amount: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
     currency: Mapped[str] = mapped_column(String(8), default="LSL")
     reason: Mapped[str] = mapped_column(Text)
     issued_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
