@@ -3,12 +3,12 @@
 import Link from "next/link";
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Building2, Loader2, LockKeyhole, Mail, Phone, UserRound } from "lucide-react";
+import { ArrowLeft, BadgePercent, Building2, Loader2, LockKeyhole, Mail, Phone, UserRound } from "lucide-react";
 import { api, AuthResponse, saveSession } from "@/lib/api";
 
 export default function RegisterPage(){
   const router=useRouter();
-  const [form,setForm]=useState({full_name:"",business_name:"",email:"",phone:"",password:""});
+  const [form,setForm]=useState({full_name:"",business_name:"",email:"",phone:"",password:"",referral_code:""});
   const [error,setError]=useState(""); const [loading,setLoading]=useState(false);
   const update=(key:string,value:string)=>setForm(v=>({...v,[key]:value}));
   async function submit(e:FormEvent){
@@ -32,7 +32,8 @@ export default function RegisterPage(){
           <Field icon={<Building2/>} label="Business / organisation"><input value={form.business_name} onChange={e=>update("business_name",e.target.value)} placeholder="Optional"/></Field>
           <div className="sm:col-span-2"><Field icon={<Mail/>} label="Email address"><input type="email" value={form.email} onChange={e=>update("email",e.target.value)} required placeholder="you@example.com"/></Field></div>
           <Field icon={<Phone/>} label="Phone number"><input value={form.phone} onChange={e=>update("phone",e.target.value)} placeholder="+266 ..."/></Field>
-          <Field icon={<LockKeyhole/>} label="Password"><input type="password" minLength={8} value={form.password} onChange={e=>update("password",e.target.value)} required placeholder="At least 8 characters"/></Field>
+          <Field icon={<BadgePercent/>} label="Referral / partner code"><input value={form.referral_code} onChange={e=>update("referral_code",e.target.value.toUpperCase())} placeholder="Optional"/></Field>
+          <div className="sm:col-span-2"><Field icon={<LockKeyhole/>} label="Password"><input type="password" minLength={8} value={form.password} onChange={e=>update("password",e.target.value)} required placeholder="At least 8 characters"/></Field></div>
           {error&&<div className="sm:col-span-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{error}</div>}
           <button disabled={loading} className="sm:col-span-2 flex h-14 items-center justify-center gap-2 rounded-2xl bg-[#e31545] font-extrabold text-white shadow-lg shadow-rose-200 disabled:opacity-60">{loading&&<Loader2 className="animate-spin" size={18}/>} {loading?"Creating account...":"Create advertiser account"}</button>
         </form>
