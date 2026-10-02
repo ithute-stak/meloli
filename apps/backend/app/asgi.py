@@ -13,6 +13,7 @@ from .competition import router as competition_router
 from .tenant_billing import router as tenant_billing_router
 from .realtime import router as realtime_router
 from .automation import router as automation_router
+from .meta_webhooks import router as meta_webhooks_router
 
 # Keep the established core application intact while composing newer feature
 # routers in one production entry point.
@@ -33,3 +34,4 @@ app.include_router(tenant_billing_router)
 
 app.include_router(realtime_router)
 app.include_router(automation_router)
+app.include_router(meta_webhooks_router)
