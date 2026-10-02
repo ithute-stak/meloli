@@ -109,6 +109,7 @@ class Payment(Base):
     currency: Mapped[str] = mapped_column(String(8), default="LSL")
     method: Mapped[str] = mapped_column(String(80), default="manual")
     reference: Mapped[str | None] = mapped_column(String(160), nullable=True, index=True)
+    promo_code_id: Mapped[int | None] = mapped_column(ForeignKey("promo_codes.id"), nullable=True, index=True)
     status: Mapped[PaymentStatus] = mapped_column(Enum(PaymentStatus, name="payment_status"), default=PaymentStatus.PENDING, index=True)
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
