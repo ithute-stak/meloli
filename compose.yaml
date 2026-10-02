@@ -58,8 +58,11 @@ services:
       MEDIA_ROOT: /data/media
       PUBLISHER_POLL_SECONDS: ${PUBLISHER_POLL_SECONDS:-60}
       PUBLISHER_BATCH_SIZE: ${PUBLISHER_BATCH_SIZE:-20}
+      BACKUP_ROOT: /data/backups
+      BACKUP_MAX_AGE_HOURS: ${BACKUP_MAX_AGE_HOURS:-30}
     volumes:
       - meloli_media:/data/media
+      - meloli_backups:/data/backups:ro
     depends_on:
       db:
         condition: service_healthy
