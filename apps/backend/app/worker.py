@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 
 from .db import SessionLocal
 from .communications import deliver_pending, enqueue_notification
+from .competition import sync_published_competitions
 from .commercial import expire_subscriptions, generate_monthly_corporate_invoices, process_commercial_alerts
 from .meta_service import MetaError, publish_campaign as publish_to_meta
 from .models import Campaign, CampaignStatus, PublicationAttempt, PublicationStatus, SystemSetting, Tenant
@@ -27,6 +28,7 @@ def run_once() -> int:
         expire_subscriptions(db)
         generate_monthly_corporate_invoices(db)
         process_commercial_alerts(db)
+        sync_published_competitions(db, min_age_minutes=max(1, int(os.getenv("COMPETITION_SYNC_MINUTES", "10"))), limit=max(1, int(os.getenv("COMPETITION_SYNC_BATCH_SIZE", "10"))))
         due = list(db.scalars(
             select(Campaign)
             .where(
