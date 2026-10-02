@@ -12,11 +12,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .db import Base, SessionLocal, engine, get_db
+from .commercial import discounted_amount, promo_for_code
 from .media import router as media_router
 from .meta_service import MetaError, publish_campaign as publish_to_meta, verify_page
 from .models import (
+    AdvertiserSubscription,
     AdvertisingPackage,
     AuditLog,
+    CorporateAccount,
     Campaign,
     CampaignStatus,
     Notification,
@@ -331,10 +334,63 @@ def create_payment(campaign_id: int, payload: PaymentCreate, user: User = Depend
     package = db.get(AdvertisingPackage, campaign.package_id)
     if not package:
         raise HTTPException(status_code=409, detail="Campaign package no longer exists")
-    payment = Payment(campaign_id=campaign.id, amount=package.price, currency=package.currency, method=payload.method, reference=payload.reference, status=PaymentStatus.PENDING)
+
+    promo = promo_for_code(db, payload.promo_code)
+    amount = discounted_amount(package.price, promo)
+    payment_status = PaymentStatus.PENDING
+    paid_at = None
+    method = payload.method
+
+    if method == "corporate_credit":
+        account = db.scalar(select(CorporateAccount).where(CorporateAccount.user_id == campaign.advertiser_id))
+        if not account or not account.active:
+            raise HTTPException(status_code=409, detail="Corporate credit is not enabled for this advertiser")
+        available = float(account.credit_limit) - float(account.credit_used)
+        if float(amount) > available:
+            raise HTTPException(status_code=409, detail=f"Corporate credit available is LSL {available:,.2f}")
+        account.credit_used = float(account.credit_used) + float(amount)
+        payment_status = PaymentStatus.PAID
+        paid_at = datetime.now(timezone.utc)
+    elif method == "subscription":
+        subscription = db.scalar(
+            select(AdvertiserSubscription)
+            .where(
+                AdvertiserSubscription.user_id == campaign.advertiser_id,
+                AdvertiserSubscription.active.is_(True),
+                AdvertiserSubscription.period_end >= datetime.now(timezone.utc),
+                AdvertiserSubscription.remaining_posts > 0,
+            )
+            .order_by(AdvertiserSubscription.period_end.desc())
+        )
+        if not subscription:
+            raise HTTPException(status_code=409, detail="No active monthly plan with remaining adverts is available")
+        subscription.remaining_posts -= 1
+        amount = discounted_amount(0, None)
+        payment_status = PaymentStatus.PAID
+        paid_at = datetime.now(timezone.utc)
+
+    payment = Payment(
+        campaign_id=campaign.id,
+        amount=amount,
+        currency=package.currency,
+        method=method,
+        reference=payload.reference or (payload.promo_code.strip().upper() if payload.promo_code else None),
+        status=payment_status,
+        paid_at=paid_at,
+    )
     db.add(payment)
     db.flush()
-    audit(db, user, "payment.created", "payment", payment.id, f"Campaign {campaign.id}")
+
+    if promo:
+        promo.uses += 1
+    if payment_status == PaymentStatus.PAID and campaign.status == CampaignStatus.PAYMENT_PENDING:
+        campaign.status = CampaignStatus.SUBMITTED
+        notify(db, campaign.advertiser_id, "payment", "Campaign funded", f"{campaign.title} is funded by {method.replace('_', ' ')} and is ready for editorial review.")
+
+    detail = f"Campaign {campaign.id}; amount {package.currency} {float(amount):.2f}"
+    if promo:
+        detail += f"; promo {promo.code}"
+    audit(db, user, "payment.created", "payment", payment.id, detail)
     db.commit()
     db.refresh(payment)
     return payment
