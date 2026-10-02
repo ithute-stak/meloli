@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .communications import enqueue_notification
-from .models import Campaign, CampaignStatus, Payment, PaymentStatus, SystemSetting, Tenant, TenantDomain, User, UserRole
+from .models import Campaign, CampaignPerformance, CampaignStatus, Payment, PaymentStatus, SystemSetting, Tenant, TenantDomain, User, UserRole
 from .realtime import emit_realtime_event
 from .tenancy import set_tenant_setting, tenant_setting
 
@@ -241,10 +241,22 @@ def send_daily_tenant_digests(db: Session) -> dict[str, int]:
             .join(Campaign, Campaign.id == Payment.campaign_id)
             .where(Campaign.tenant_id == tenant.id, Payment.status == PaymentStatus.PAID)
         ) or 0
+        performance = db.execute(
+            select(
+                func.coalesce(func.sum(CampaignPerformance.impressions), 0),
+                func.coalesce(func.sum(CampaignPerformance.reach), 0),
+                func.coalesce(func.sum(CampaignPerformance.clicks), 0),
+                func.coalesce(func.sum(CampaignPerformance.reactions), 0),
+            )
+            .join(Campaign, Campaign.id == CampaignPerformance.campaign_id)
+            .where(Campaign.tenant_id == tenant.id)
+        ).one()
+        impressions, reach, clicks, reactions = [int(value or 0) for value in performance]
 
         message = (
             f"Daily summary for {tenant.name}: {campaigns} campaigns, {awaiting} awaiting review, "
-            f"{scheduled} scheduled, {published} published, and LSL {float(revenue):,.2f} confirmed revenue."
+            f"{scheduled} scheduled, {published} published, LSL {float(revenue):,.2f} confirmed revenue, "
+            f"{reach:,} Facebook reach, {impressions:,} impressions, {clicks:,} clicks and {reactions:,} reactions."
         )
         for admin in admins:
             enqueue_notification(db, admin.id, "daily_digest", "Daily advertising summary", message)
@@ -256,7 +268,7 @@ def send_daily_tenant_digests(db: Session) -> dict[str, int]:
             audience="tenant_staff",
             entity_type="tenant",
             entity_id=tenant.id,
-            payload={"date": today, "campaigns": campaigns, "awaiting_review": awaiting, "scheduled": scheduled, "published": published, "revenue": float(revenue)},
+            payload={"date": today, "campaigns": campaigns, "awaiting_review": awaiting, "scheduled": scheduled, "published": published, "revenue": float(revenue), "reach": reach, "impressions": impressions, "clicks": clicks, "reactions": reactions},
         )
         sent += 1
     db.commit()
