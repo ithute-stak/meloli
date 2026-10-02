@@ -17,6 +17,7 @@ from .tenant_billing import process_tenant_subscription_lifecycle
 from .meta_webhooks import process_meta_webhook_events
 from .health_automation import check_backup_freshness, check_custom_domains, check_meta_integrations, send_daily_tenant_digests
 from .presence import cleanup_review_presence
+from .performance import sync_published_performance_automated
 
 
 def setting(db, key: str) -> str | None:
@@ -259,6 +260,7 @@ def run_once() -> dict[str, object]:
             ("review_presence_cleanup", max(30, int(os.getenv("REVIEW_PRESENCE_CLEANUP_SECONDS", "60"))), cleanup_review_presence),
             ("realtime_event_cleanup", max(300, int(os.getenv("REALTIME_CLEANUP_SECONDS", "3600"))), lambda s: {"deleted": cleanup_realtime_events(s, retention_hours=max(1, int(os.getenv("REALTIME_EVENT_RETENTION_HOURS", "48"))))}),
             ("competition_sync", max(60, int(os.getenv("COMPETITION_SYNC_MINUTES", "10")) * 60), lambda s: {"synced": sync_published_competitions(s, min_age_minutes=max(1, int(os.getenv("COMPETITION_SYNC_MINUTES", "10"))), limit=max(1, int(os.getenv("COMPETITION_SYNC_BATCH_SIZE", "10"))))}),
+            ("facebook_performance_sync", max(300, int(os.getenv("PERFORMANCE_SYNC_SECONDS", "3600"))), lambda s: sync_published_performance_automated(s, limit=max(1, int(os.getenv("PERFORMANCE_SYNC_BATCH_SIZE", "100"))))),
             ("scheduled_publishing", max(15, int(os.getenv("PUBLISHER_POLL_SECONDS", "60"))), process_scheduled_publishing),
         ]
         for key, interval, fn in jobs:
