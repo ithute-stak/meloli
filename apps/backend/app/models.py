@@ -380,3 +380,17 @@ class CampaignMedia(Base):
     position: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     campaign: Mapped[Campaign] = relationship(back_populates="media_items")
+
+
+class CampaignReviewChecklist(Base):
+    __tablename__ = "campaign_review_checklists"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id"), unique=True, index=True)
+    content_accuracy_checked: Mapped[bool] = mapped_column(Boolean, default=False)
+    media_rights_checked: Mapped[bool] = mapped_column(Boolean, default=False)
+    contact_details_checked: Mapped[bool] = mapped_column(Boolean, default=False)
+    policy_checked: Mapped[bool] = mapped_column(Boolean, default=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    completed_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
