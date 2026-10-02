@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, BarChart3, Eye, Loader2, Megaphone, MousePointerClick, RefreshCw, Share2, ThumbsUp, TrendingUp, Users } from "lucide-react";
 import { api, getSessionUser } from "@/lib/api";
+import { useRealtimeTopics } from "@/app/components/RealtimeBridge";
 
 type Summary={advertisers:number;campaigns:number;awaiting_review:number;scheduled:number;published:number;paid_payments:number;revenue:number;currency:string;failed_publications:number};
 type Performance={campaigns_published:number;campaigns_with_metrics:number;impressions:number;reach:number;engaged_users:number;clicks:number;reactions:number;comments:number;shares:number;video_views:number;engagement_rate:number;click_rate:number};
@@ -41,6 +42,7 @@ export default function ReportsPage(){
     setCanSync(["publisher","super_admin"].includes(user.role));
     load();
   },[router]);
+  useRealtimeTopics(["performance","campaign"],()=>{load()});
 
   async function syncPerformance(){
     setSyncing(true); setError(""); setSyncMessage("");
