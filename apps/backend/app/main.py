@@ -34,6 +34,8 @@ from .models import (
     PaymentStatus,
     PublicationAttempt,
     PublicationStatus,
+    ReferralAttribution,
+    ReferralPartner,
     SystemSetting,
     User,
     UserRole,
@@ -209,10 +211,19 @@ def register(payload: UserRegister, request: Request, db: Session = Depends(get_
     email = payload.email.lower()
     if db.scalar(select(User).where(User.email == email)):
         raise HTTPException(status_code=409, detail="An account already exists for this email")
+    partner = None
+    if payload.referral_code:
+        code = payload.referral_code.strip().upper()
+        partner = db.scalar(select(ReferralPartner).where(ReferralPartner.code == code, ReferralPartner.active.is_(True)))
+        if not partner:
+            raise HTTPException(status_code=400, detail="Referral code is invalid or inactive")
     user = User(full_name=payload.full_name, business_name=payload.business_name, email=email, phone=payload.phone, password_hash=hash_password(payload.password), role=UserRole.ADVERTISER)
     db.add(user)
     db.flush()
     audit(db, user, "account.registered", "user", user.id)
+    if partner:
+        db.add(ReferralAttribution(partner_id=partner.id, user_id=user.id))
+        audit(db, user, "referral.attributed", "referral_partner", partner.id, partner.code)
     session_key = secrets.token_urlsafe(24)
     db.add(AuthSession(user_id=user.id, session_key=session_key, user_agent=request.headers.get("user-agent"), ip_address=request.client.host if request.client else None))
     db.commit()
