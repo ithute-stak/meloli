@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .models import AdvertiserSubscription, AuditLog, CorporateAccount, PromoCode, SubscriptionPlan, User, UserRole
+from .models import AdvertiserSubscription, AuditLog, Campaign, CorporateAccount, Payment, PromoCode, SubscriptionPlan, User, UserRole
 from .security import decode_access_token
 
 router = APIRouter()
@@ -45,6 +45,14 @@ class SubscriptionAssign(BaseModel):
     user_id: int
     plan_id: int
     months: int = Field(default=1, ge=1, le=24)
+
+
+class SubscriptionRenew(BaseModel):
+    months: int = Field(default=1, ge=1, le=24)
+
+
+class CorporateSettlement(BaseModel):
+    amount: float | None = Field(default=None, gt=0)
 
 
 def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bearer), db: Session = Depends(get_db)) -> User:
@@ -196,3 +204,137 @@ def assign_subscription(payload: SubscriptionAssign, admin: User = Depends(super
     sub=AdvertiserSubscription(user_id=user.id,plan_id=plan.id,period_start=now,period_end=now+timedelta(days=30*payload.months),remaining_posts=plan.included_posts*payload.months,active=True)
     db.add(sub);db.flush();audit(db,admin,"subscription.assigned","user",user.id,f"{plan.code} x{payload.months}");db.commit();db.refresh(sub)
     return {"id":sub.id,"user_id":user.id,"plan_id":plan.id,"remaining_posts":sub.remaining_posts,"period_end":sub.period_end}
+
+
+
+def expire_subscriptions(db: Session) -> int:
+    now = datetime.now(timezone.utc)
+    expired = list(db.scalars(
+        select(AdvertiserSubscription).where(
+            AdvertiserSubscription.active.is_(True),
+            AdvertiserSubscription.period_end < now,
+        )
+    ))
+    for row in expired:
+        row.active = False
+    if expired:
+        db.commit()
+    return len(expired)
+
+
+@router.get("/api/v1/admin/subscriptions")
+def list_subscriptions(_: User = Depends(super_admin), db: Session = Depends(get_db)):
+    expire_subscriptions(db)
+    rows = list(db.scalars(select(AdvertiserSubscription).order_by(AdvertiserSubscription.period_end.desc())))
+    result = []
+    for row in rows:
+        user = db.get(User, row.user_id)
+        plan = db.get(SubscriptionPlan, row.plan_id)
+        result.append({
+            "id": row.id,
+            "user_id": row.user_id,
+            "advertiser": (user.business_name or user.full_name) if user else f"User #{row.user_id}",
+            "plan_id": row.plan_id,
+            "plan": plan.name if plan else f"Plan #{row.plan_id}",
+            "period_start": row.period_start,
+            "period_end": row.period_end,
+            "remaining_posts": row.remaining_posts,
+            "active": row.active,
+        })
+    return result
+
+
+@router.post("/api/v1/admin/subscriptions/{subscription_id}/renew")
+def renew_subscription(subscription_id: int, payload: SubscriptionRenew, admin: User = Depends(super_admin), db: Session = Depends(get_db)):
+    row = db.get(AdvertiserSubscription, subscription_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    plan = db.get(SubscriptionPlan, row.plan_id)
+    if not plan or not plan.active:
+        raise HTTPException(status_code=409, detail="Subscription plan is unavailable")
+    now = datetime.now(timezone.utc)
+    base = max(as_utc(row.period_end) or now, now)
+    row.period_end = base + timedelta(days=30 * payload.months)
+    row.remaining_posts += plan.included_posts * payload.months
+    row.active = True
+    audit(db, admin, "subscription.renewed", "subscription", row.id, f"{plan.code} x{payload.months}")
+    db.commit()
+    return {"id": row.id, "period_end": row.period_end, "remaining_posts": row.remaining_posts, "active": row.active}
+
+
+@router.get("/api/v1/admin/advertisers/{user_id}/corporate/statement")
+def corporate_statement(user_id: int, _: User = Depends(super_admin), db: Session = Depends(get_db)):
+    user = db.get(User, user_id)
+    if not user or user.role != UserRole.ADVERTISER:
+        raise HTTPException(status_code=404, detail="Advertiser not found")
+    account = db.scalar(select(CorporateAccount).where(CorporateAccount.user_id == user_id))
+    if not account:
+        raise HTTPException(status_code=404, detail="Corporate account not found")
+    rows = list(db.execute(
+        select(Payment, Campaign)
+        .join(Campaign, Campaign.id == Payment.campaign_id)
+        .where(Campaign.advertiser_id == user_id, Payment.method == "corporate_credit")
+        .order_by(Payment.created_at.desc())
+    ).all())
+    return {
+        "advertiser": {"id": user.id, "name": user.business_name or user.full_name, "email": user.email},
+        "account": {
+            "credit_limit": float(account.credit_limit),
+            "credit_used": float(account.credit_used),
+            "available_credit": max(0, float(account.credit_limit) - float(account.credit_used)),
+            "billing_cycle_day": account.billing_cycle_day,
+            "active": account.active,
+        },
+        "transactions": [
+            {
+                "payment_id": payment.id,
+                "campaign_id": campaign.id,
+                "campaign": campaign.title,
+                "amount": float(payment.amount),
+                "currency": payment.currency,
+                "created_at": payment.created_at,
+                "status": payment.status.value,
+            }
+            for payment, campaign in rows
+        ],
+    }
+
+
+@router.post("/api/v1/admin/advertisers/{user_id}/corporate/settle")
+def settle_corporate(user_id: int, payload: CorporateSettlement, admin: User = Depends(super_admin), db: Session = Depends(get_db)):
+    account = db.scalar(select(CorporateAccount).where(CorporateAccount.user_id == user_id))
+    if not account:
+        raise HTTPException(status_code=404, detail="Corporate account not found")
+    current = Decimal(str(account.credit_used or 0))
+    amount = current if payload.amount is None else Decimal(str(payload.amount))
+    if amount > current:
+        raise HTTPException(status_code=400, detail="Settlement cannot exceed the outstanding corporate balance")
+    account.credit_used = max(Decimal("0.00"), current - amount)
+    audit(db, admin, "corporate_account.settled", "user", user_id, f"LSL {amount:.2f}")
+    db.commit()
+    return {
+        "user_id": user_id,
+        "settled": float(amount),
+        "credit_used": float(account.credit_used),
+        "available_credit": max(0, float(account.credit_limit) - float(account.credit_used)),
+    }
+
+
+@router.get("/api/v1/admin/promos/performance")
+def promo_performance(_: User = Depends(super_admin), db: Session = Depends(get_db)):
+    rows = list(db.scalars(select(PromoCode).order_by(PromoCode.uses.desc(), PromoCode.created_at.desc())))
+    return [
+        {
+            "id": p.id,
+            "code": p.code,
+            "uses": p.uses,
+            "max_uses": p.max_uses,
+            "utilization_percent": round((p.uses / p.max_uses) * 100, 1) if p.max_uses else None,
+            "percent_off": float(p.percent_off),
+            "fixed_off": float(p.fixed_off),
+            "active": p.active,
+            "starts_at": p.starts_at,
+            "ends_at": p.ends_at,
+        }
+        for p in rows
+    ]
