@@ -58,6 +58,7 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     two_factor_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     totp_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    auth_version: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     campaigns: Mapped[list["Campaign"]] = relationship(back_populates="advertiser")
     notifications: Mapped[list["Notification"]] = relationship(back_populates="user", cascade="all, delete-orphan")
