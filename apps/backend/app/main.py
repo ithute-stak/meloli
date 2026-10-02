@@ -260,7 +260,7 @@ def create_package(payload: PackageWrite, admin: User = Depends(super_admin), db
     code = payload.code.upper().strip()
     if db.scalar(select(AdvertisingPackage).where(AdvertisingPackage.code == code)):
         raise HTTPException(status_code=409, detail="Package code already exists")
-    package = AdvertisingPackage(code=code, name=payload.name, description=payload.description, price=payload.price, currency=payload.currency.upper(), posts_included=payload.posts_included, active=payload.active)
+    package = AdvertisingPackage(code=code, name=payload.name, description=payload.description, price=payload.price, currency=payload.currency.upper(), posts_included=payload.posts_included, max_media_items=payload.max_media_items, allow_video=payload.allow_video, allow_carousel=payload.allow_carousel, active=payload.active)
     db.add(package)
     db.flush()
     audit(db, admin, "package.created", "advertising_package", package.id, code)
@@ -284,6 +284,9 @@ def update_package(package_id: int, payload: PackageWrite, admin: User = Depends
     package.price = payload.price
     package.currency = payload.currency.upper()
     package.posts_included = payload.posts_included
+    package.max_media_items = payload.max_media_items
+    package.allow_video = payload.allow_video
+    package.allow_carousel = payload.allow_carousel
     package.active = payload.active
     audit(db, admin, "package.updated", "advertising_package", package.id, code)
     db.commit()
@@ -308,6 +311,12 @@ def create_campaign(payload: CampaignCreate, user: User = Depends(current_user),
     media_items = list(payload.media_items or [])
     if len(media_items) > 10:
         raise HTTPException(status_code=400, detail="A campaign can contain at most 10 media items")
+    if len(media_items) > int(package.max_media_items or 10):
+        raise HTTPException(status_code=400, detail=f"{package.name} allows at most {package.max_media_items} media item(s)")
+    if any(item.content_type.lower().startswith("video/") for item in media_items) and not package.allow_video:
+        raise HTTPException(status_code=400, detail=f"{package.name} does not allow video adverts")
+    if len(media_items) > 1 and not package.allow_carousel:
+        raise HTTPException(status_code=400, detail=f"{package.name} does not allow carousel adverts")
     if len(media_items) > 1 and any(not item.content_type.lower().startswith("image/") for item in media_items):
         raise HTTPException(status_code=400, detail="Carousel campaigns support images only. Use a single video for video adverts")
     if len(media_items) == 1 and not (
