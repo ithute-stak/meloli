@@ -38,6 +38,7 @@ from .models import (
     ReferralAttribution,
     ReferralPartner,
     SystemSetting,
+    Tenant,
     User,
     UserRole,
 )
@@ -211,8 +212,10 @@ def get_campaign_for_user(db: Session, campaign_id: int, user: User) -> Campaign
     campaign = db.get(Campaign, campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    if user.role == UserRole.ADVERTISER and campaign.advertiser_id != user.id:
+    if user.role == UserRole.ADVERTISER and not user.is_tenant_admin and campaign.advertiser_id != user.id:
         raise HTTPException(status_code=403, detail="You cannot access this campaign")
+    if user.tenant_id and campaign.tenant_id and campaign.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=403, detail="Campaign belongs to another portal")
     return campaign
 
 
@@ -226,13 +229,21 @@ def register(payload: UserRegister, request: Request, db: Session = Depends(get_
     email = payload.email.lower()
     if db.scalar(select(User).where(User.email == email)):
         raise HTTPException(status_code=409, detail="An account already exists for this email")
+    tenant = None
+    if payload.tenant_slug:
+        tenant = db.scalar(select(Tenant).where(Tenant.slug == payload.tenant_slug.lower(), Tenant.active.is_(True)))
+        if not tenant:
+            raise HTTPException(status_code=400, detail="Advertising portal is unavailable")
+    else:
+        tenant = db.scalar(select(Tenant).where(Tenant.slug == "meloli-airwaves", Tenant.active.is_(True)))
+
     partner = None
     if payload.referral_code:
         code = payload.referral_code.strip().upper()
         partner = db.scalar(select(ReferralPartner).where(ReferralPartner.code == code, ReferralPartner.active.is_(True)))
         if not partner:
             raise HTTPException(status_code=400, detail="Referral code is invalid or inactive")
-    user = User(full_name=payload.full_name, business_name=payload.business_name, email=email, phone=payload.phone, password_hash=hash_password(payload.password), role=UserRole.ADVERTISER)
+    user = User(tenant_id=tenant.id if tenant else None, full_name=payload.full_name, business_name=payload.business_name, email=email, phone=payload.phone, password_hash=hash_password(payload.password), role=UserRole.ADVERTISER)
     db.add(user)
     db.flush()
     audit(db, user, "account.registered", "user", user.id)
@@ -324,8 +335,10 @@ def update_package(package_id: int, payload: PackageWrite, admin: User = Depends
 @app.get("/api/v1/campaigns", response_model=list[CampaignOut])
 def list_campaigns(user: User = Depends(current_user), db: Session = Depends(get_db)):
     query = select(Campaign).order_by(Campaign.created_at.desc())
-    if user.role == UserRole.ADVERTISER:
+    if user.role == UserRole.ADVERTISER and not user.is_tenant_admin:
         query = query.where(Campaign.advertiser_id == user.id)
+    elif user.tenant_id:
+        query = query.where(Campaign.tenant_id == user.tenant_id)
     return list(db.scalars(query))
 
 
@@ -354,9 +367,11 @@ def create_campaign(payload: CampaignCreate, user: User = Depends(current_user),
 
     primary_media = media_items[0].url if media_items else payload.media_url
     campaign = Campaign(
+        tenant_id=user.tenant_id,
         advertiser_id=user.id,
         package_id=package.id,
         title=payload.title,
+        engagement_mode=payload.engagement_mode,
         caption=payload.caption,
         media_url=primary_media,
         destination_url=payload.destination_url,
@@ -649,9 +664,13 @@ def publish_campaign(campaign_id: int, publisher: User = Depends(publisher_user)
     if campaign.facebook_post_id:
         raise HTTPException(status_code=409, detail="Campaign has already been published")
 
-    page_id = setting_value(db, "meta.page_id")
-    token = setting_secret(db, "meta.page_access_token")
-    version = setting_value(db, "meta.graph_api_version")
+    from .tenancy import tenant_setting
+    page_id = tenant_setting(db, campaign.tenant_id, "meta.page_id") if campaign.tenant_id else None
+    token = tenant_setting(db, campaign.tenant_id, "meta.page_access_token") if campaign.tenant_id else None
+    version = tenant_setting(db, campaign.tenant_id, "meta.graph_api_version") if campaign.tenant_id else None
+    page_id = page_id or setting_value(db, "meta.page_id")
+    token = token or setting_secret(db, "meta.page_access_token")
+    version = version or setting_value(db, "meta.graph_api_version")
     if not page_id or not token or not version:
         raise HTTPException(status_code=409, detail="Meta publishing is not fully configured in System Configuration")
 
