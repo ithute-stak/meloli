@@ -13,7 +13,7 @@ from reportlab.pdfgen import canvas
 
 from .branding import LIGHT, MUTED, NAVY, RED, draw_footer, draw_header, info_label
 from .db import get_db
-from .models import AdvertiserSubscription, AuditLog, Campaign, CorporateAccount, Payment, PromoCode, SubscriptionPlan, User, UserRole
+from .models import AdvertiserSubscription, AuditLog, Campaign, CorporateAccount, CorporateSettlement, Payment, PromoCode, SubscriptionPlan, User, UserRole
 from .security import decode_access_token
 
 router = APIRouter()
@@ -56,8 +56,10 @@ class SubscriptionRenew(BaseModel):
     months: int = Field(default=1, ge=1, le=24)
 
 
-class CorporateSettlement(BaseModel):
+class CorporateSettlementWrite(BaseModel):
     amount: float | None = Field(default=None, gt=0)
+    method: str = Field(default="bank_transfer", min_length=2, max_length=80)
+    reference: str | None = Field(default=None, max_length=160)
 
 
 def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bearer), db: Session = Depends(get_db)) -> User:
@@ -396,7 +398,7 @@ def corporate_statement_pdf(user_id: int, _: User = Depends(super_admin), db: Se
 
 
 @router.post("/api/v1/admin/advertisers/{user_id}/corporate/settle")
-def settle_corporate(user_id: int, payload: CorporateSettlement, admin: User = Depends(super_admin), db: Session = Depends(get_db)):
+def settle_corporate(user_id: int, payload: CorporateSettlementWrite, admin: User = Depends(super_admin), db: Session = Depends(get_db)):
     account = db.scalar(select(CorporateAccount).where(CorporateAccount.user_id == user_id))
     if not account:
         raise HTTPException(status_code=404, detail="Corporate account not found")
@@ -405,14 +407,46 @@ def settle_corporate(user_id: int, payload: CorporateSettlement, admin: User = D
     if amount > current:
         raise HTTPException(status_code=400, detail="Settlement cannot exceed the outstanding corporate balance")
     account.credit_used = max(Decimal("0.00"), current - amount)
-    audit(db, admin, "corporate_account.settled", "user", user_id, f"LSL {amount:.2f}")
+    settlement = CorporateSettlement(
+        corporate_account_id=account.id,
+        amount=amount,
+        method=payload.method.strip().lower(),
+        reference=payload.reference.strip() if payload.reference else None,
+        recorded_by_user_id=admin.id,
+    )
+    db.add(settlement)
+    db.flush()
+    audit(db, admin, "corporate_account.settled", "user", user_id, f"LSL {amount:.2f}; settlement {settlement.id}")
     db.commit()
     return {
         "user_id": user_id,
+        "settlement_id": settlement.id,
         "settled": float(amount),
+        "method": settlement.method,
+        "reference": settlement.reference,
         "credit_used": float(account.credit_used),
         "available_credit": max(0, float(account.credit_limit) - float(account.credit_used)),
     }
+
+
+@router.get("/api/v1/admin/advertisers/{user_id}/corporate/settlements")
+def corporate_settlements(user_id: int, _: User = Depends(super_admin), db: Session = Depends(get_db)):
+    account = db.scalar(select(CorporateAccount).where(CorporateAccount.user_id == user_id))
+    if not account:
+        raise HTTPException(status_code=404, detail="Corporate account not found")
+    rows = list(db.scalars(
+        select(CorporateSettlement)
+        .where(CorporateSettlement.corporate_account_id == account.id)
+        .order_by(CorporateSettlement.settled_at.desc())
+    ))
+    return [{
+        "id": row.id,
+        "amount": float(row.amount),
+        "method": row.method,
+        "reference": row.reference,
+        "settled_at": row.settled_at,
+        "recorded_by_user_id": row.recorded_by_user_id,
+    } for row in rows]
 
 
 @router.get("/api/v1/admin/promos/performance")
