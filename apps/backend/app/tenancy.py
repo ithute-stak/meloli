@@ -89,6 +89,18 @@ def clean_hostname(value: str) -> str:
     return host
 
 
+def ensure_facebook_page_available(db: Session, page_id: str | None, tenant_id: int | None = None) -> str | None:
+    normalized = page_id.strip() if page_id else None
+    if not normalized:
+        return None
+    query = select(Tenant.id).where(Tenant.facebook_page_id == normalized)
+    if tenant_id is not None:
+        query = query.where(Tenant.id != tenant_id)
+    if db.scalar(query):
+        raise HTTPException(status_code=409, detail="This Facebook Page is already registered to another portal")
+    return normalized
+
+
 def tenant_setting(db: Session, tenant_id: int, key: str) -> str | None:
     row = db.scalar(select(TenantSetting).where(TenantSetting.tenant_id == tenant_id, TenantSetting.key == key).order_by(TenantSetting.id.desc()))
     if not row or not row.value:
@@ -130,6 +142,8 @@ def register_tenant(payload: TenantRegister, db: Session = Depends(get_db)):
     if db.scalar(select(User.id).where(User.email == email)):
         raise HTTPException(status_code=409, detail="An account with this email already exists")
 
+    facebook_page_id = ensure_facebook_page_available(db, payload.facebook_page_id)
+
     base_slug = slugify(payload.desired_slug or payload.page_name)
     slug = base_slug
     counter = 2
@@ -141,7 +155,7 @@ def register_tenant(payload: TenantRegister, db: Session = Depends(get_db)):
         name=payload.page_name.strip(),
         slug=slug,
         facebook_page_name=payload.page_name.strip(),
-        facebook_page_id=payload.facebook_page_id.strip() if payload.facebook_page_id else None,
+        facebook_page_id=facebook_page_id,
         accent_color="#e31545",
         active=True,
     )
@@ -254,9 +268,10 @@ def tenant_admin_profile(admin: User = Depends(tenant_admin), db: Session = Depe
 @router.put("/api/v1/tenant-admin/profile")
 def update_tenant_profile(payload: TenantProfileWrite, admin: User = Depends(tenant_admin), db: Session = Depends(get_db)):
     tenant = db.get(Tenant, admin.tenant_id)
+    facebook_page_id = ensure_facebook_page_available(db, payload.facebook_page_id, tenant.id)
     tenant.name = payload.name.strip()
     tenant.facebook_page_name = payload.facebook_page_name.strip() if payload.facebook_page_name else None
-    tenant.facebook_page_id = payload.facebook_page_id.strip() if payload.facebook_page_id else None
+    tenant.facebook_page_id = facebook_page_id
     tenant.logo_url = payload.logo_url
     tenant.accent_color = payload.accent_color
     db.add(AuditLog(actor_user_id=admin.id, action="tenant.profile_updated", entity_type="tenant", entity_id=str(tenant.id), detail=tenant.slug))
@@ -312,6 +327,19 @@ def verify_own_custom_domain(domain_id: int, admin: User = Depends(tenant_admin)
         raise HTTPException(status_code=409, detail=f"Verification TXT record not found yet: {str(exc)[:180]}") from exc
     if expected not in values:
         raise HTTPException(status_code=409, detail="Verification TXT record exists but does not contain the expected token")
+
+    portal_host = os.getenv("PORTAL_CNAME_TARGET", "portal.example.com").strip().lower().rstrip(".")
+    try:
+        cname_answers = dns.resolver.resolve(row.hostname, "CNAME")
+        cname_targets = {str(answer.target).strip().lower().rstrip(".") for answer in cname_answers}
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=f"Portal CNAME record not found yet: {str(exc)[:180]}") from exc
+    if portal_host not in cname_targets:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Domain ownership is proven, but the CNAME must point to {portal_host} before routing can be activated",
+        )
+
     row.status = "verified"
     row.verified_at = datetime.now(timezone.utc)
     db.add(AuditLog(actor_user_id=admin.id, action="tenant.domain_verified_dns", entity_type="tenant_domain", entity_id=str(row.id), detail=row.hostname))
@@ -355,8 +383,9 @@ def tenant_meta_status(admin: User = Depends(tenant_admin), db: Session = Depend
 @router.put("/api/v1/tenant-admin/meta")
 def save_tenant_meta(payload: TenantMetaWrite, admin: User = Depends(tenant_admin), db: Session = Depends(get_db)):
     tenant_id = admin.tenant_id
+    page_id = ensure_facebook_page_available(db, payload.page_id, tenant_id)
     set_tenant_setting(db, tenant_id, "meta.app_id", payload.app_id)
-    set_tenant_setting(db, tenant_id, "meta.page_id", payload.page_id)
+    set_tenant_setting(db, tenant_id, "meta.page_id", page_id)
     set_tenant_setting(db, tenant_id, "meta.graph_api_version", payload.graph_api_version)
     if payload.app_secret is not None:
         set_tenant_setting(db, tenant_id, "meta.app_secret", payload.app_secret.get_secret_value(), encrypted=True)
@@ -384,10 +413,11 @@ def test_tenant_meta(admin: User = Depends(tenant_admin), db: Session = Depends(
     data = response.json() if response.content else {}
     if response.is_error:
         raise HTTPException(status_code=502, detail=data.get("error", {}).get("message") or "Meta connection failed")
+    verified_page_id = ensure_facebook_page_available(db, str(data.get("id") or page_id), tenant_id)
     set_tenant_setting(db, tenant_id, "meta.connected", "true")
     set_tenant_setting(db, tenant_id, "meta.page_name", str(data.get("name") or ""))
     tenant = db.get(Tenant, tenant_id)
-    tenant.facebook_page_id = str(data.get("id") or page_id)
+    tenant.facebook_page_id = verified_page_id
     tenant.facebook_page_name = str(data.get("name") or tenant.name)
     db.commit()
     return {"connected": True, "page_id": tenant.facebook_page_id, "page_name": tenant.facebook_page_name}
