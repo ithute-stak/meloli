@@ -453,6 +453,28 @@ def list_campaigns(user: User = Depends(current_user), db: Session = Depends(get
 
 @app.post("/api/v1/campaigns", response_model=CampaignOut, status_code=201)
 def create_campaign(payload: CampaignCreate, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if user.tenant_id:
+        subscription = db.scalar(select(TenantSubscription).where(TenantSubscription.tenant_id == user.tenant_id))
+        plan = db.get(TenantPlan, subscription.plan_id) if subscription else None
+        if not subscription or not plan:
+            raise HTTPException(status_code=402, detail="This Page portal does not have a tenant subscription")
+        period_end = subscription.current_period_end
+        period_end = period_end.replace(tzinfo=timezone.utc) if period_end.tzinfo is None else period_end
+        if subscription.status not in {"trialing", "active"} or period_end < datetime.now(timezone.utc):
+            raise HTTPException(status_code=402, detail="This Page portal subscription is inactive or expired")
+        now = datetime.now(timezone.utc)
+        month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+        campaign_count = db.scalar(
+            select(func.count(Campaign.id)).where(
+                Campaign.tenant_id == user.tenant_id,
+                Campaign.created_at >= month_start,
+            )
+        ) or 0
+        if campaign_count >= plan.max_campaigns_monthly:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Your {plan.name} tenant plan monthly campaign limit ({plan.max_campaigns_monthly}) has been reached",
+            )
     tenant_filter = AdvertisingPackage.tenant_id == user.tenant_id if user.tenant_id is not None else AdvertisingPackage.tenant_id.is_(None)
     package = db.scalar(select(AdvertisingPackage).where(tenant_filter, AdvertisingPackage.code == payload.package_code.upper(), AdvertisingPackage.active.is_(True)))
     if not package:
