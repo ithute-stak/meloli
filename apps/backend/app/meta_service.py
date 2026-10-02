@@ -1,3 +1,4 @@
+import json
 import mimetypes
 import os
 from dataclasses import dataclass
@@ -126,7 +127,19 @@ def publish_campaign(
     message: str,
     media_url: str | None,
     destination_url: str | None,
+    media_items: list[tuple[str, str]] | None = None,
 ) -> MetaPublishResult:
+    items = list(media_items or [])
+    if len(items) > 1:
+        if any(not content_type.startswith("image/") for _, content_type in items):
+            raise MetaError("Facebook carousel publishing currently supports images only")
+        return _publish_carousel(page_id, access_token, version, message, [url for url, _ in items])
+    if len(items) == 1:
+        item_url, content_type = items[0]
+        if content_type.startswith("image/"):
+            return _publish_photo(page_id, access_token, version, message, item_url)
+        if content_type.startswith("video/"):
+            return _publish_video(page_id, access_token, version, message, item_url)
     if media_url:
         content_type = mimetypes.guess_type(media_url.split("?", 1)[0])[0] or ""
         if content_type.startswith("image/"):
@@ -134,6 +147,41 @@ def publish_campaign(
         if content_type.startswith("video/"):
             return _publish_video(page_id, access_token, version, message, media_url)
     return _publish_feed(page_id, access_token, version, message, destination_url)
+
+
+def _publish_carousel(page_id: str, token: str, version: str, message: str, media_urls: list[str]) -> MetaPublishResult:
+    if len(media_urls) < 2 or len(media_urls) > 10:
+        raise MetaError("Facebook carousel posts require between 2 and 10 images")
+    photo_ids: list[str] = []
+    for media_url in media_urls:
+        response = httpx.post(
+            f"{graph_base(version)}/{page_id}/photos",
+            data={
+                "url": _public_media_url(media_url),
+                "published": "false",
+                "access_token": token,
+            },
+            timeout=45.0,
+        )
+        payload = _json(response)
+        if response.is_error:
+            raise MetaError(_meta_message(payload, response.status_code))
+        photo_id = str(payload.get("id") or "")
+        if not photo_id:
+            raise MetaError("Meta accepted a carousel image but returned no photo id")
+        photo_ids.append(photo_id)
+
+    data: dict[str, str] = {"message": message, "access_token": token}
+    for index, photo_id in enumerate(photo_ids):
+        data[f"attached_media[{index}]"] = json.dumps({"media_fbid": photo_id})
+    response = httpx.post(f"{graph_base(version)}/{page_id}/feed", data=data, timeout=45.0)
+    payload = _json(response)
+    if response.is_error:
+        raise MetaError(_meta_message(payload, response.status_code))
+    post_id = str(payload.get("id") or "")
+    if not post_id:
+        raise MetaError("Meta accepted the carousel but returned no post id")
+    return MetaPublishResult(post_id=post_id, post_url=_post_url(post_id))
 
 
 def _publish_feed(page_id: str, token: str, version: str, message: str, link: str | None) -> MetaPublishResult:
