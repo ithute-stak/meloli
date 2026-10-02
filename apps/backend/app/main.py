@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from .db import Base, SessionLocal, engine, get_db
 from .commercial import discounted_amount, promo_for_code
+from .communications import enqueue_notification
 from .media import router as media_router
 from .meta_service import MetaError, publish_campaign as publish_to_meta, verify_page
 from .models import (
@@ -134,7 +135,7 @@ def audit(db: Session, actor: User | None, action: str, entity_type: str, entity
 
 
 def notify(db: Session, user_id: int, kind: str, title: str, message: str) -> None:
-    db.add(Notification(user_id=user_id, kind=kind, title=title, message=message))
+    enqueue_notification(db, user_id, kind, title, message)
 
 
 def get_setting(db: Session, key: str) -> SystemSetting | None:
