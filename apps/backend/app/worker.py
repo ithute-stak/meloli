@@ -40,6 +40,7 @@ def run_once() -> int:
                 Campaign.scheduled_publish_at.is_not(None),
                 Campaign.scheduled_publish_at <= datetime.now(timezone.utc),
                 Campaign.facebook_post_id.is_(None),
+                Campaign.cancelled_at.is_(None),
             )
             .order_by(Campaign.scheduled_publish_at)
             .limit(int(os.getenv("PUBLISHER_BATCH_SIZE", "20")))
