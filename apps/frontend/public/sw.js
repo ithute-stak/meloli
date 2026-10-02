@@ -1,5 +1,5 @@
 const CACHE_NAME = "meloli-shell-v1";
-const SHELL = ["/", "/login", "/register"];
+const SHELL = ["/", "/login", "/register", "/offline"];
 
 self.addEventListener("install", event => {
   event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -24,6 +24,6 @@ self.addEventListener("fetch", event => {
         }
         return response;
       })
-      .catch(() => caches.match(event.request).then(hit => hit || caches.match("/")))
+      .catch(() => caches.match(event.request).then(hit => hit || caches.match("/offline")))
   );
 });
