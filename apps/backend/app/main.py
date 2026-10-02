@@ -310,6 +310,8 @@ def decide_campaign(campaign_id: int, payload: CampaignDecision, staff: User = D
     campaign = db.get(Campaign, campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.cancelled_at is not None:
+        raise HTTPException(status_code=409, detail="Cancelled campaigns cannot enter editorial review")
     allowed = {CampaignStatus.IN_REVIEW, CampaignStatus.CHANGES_REQUESTED, CampaignStatus.APPROVED, CampaignStatus.SCHEDULED, CampaignStatus.REJECTED}
     if payload.status not in allowed:
         raise HTTPException(status_code=400, detail="Unsupported editorial decision")
@@ -339,6 +341,8 @@ def list_payments(campaign_id: int, user: User = Depends(current_user), db: Sess
 @app.post("/api/v1/campaigns/{campaign_id}/payments", response_model=PaymentOut, status_code=201)
 def create_payment(campaign_id: int, payload: PaymentCreate, user: User = Depends(current_user), db: Session = Depends(get_db)):
     campaign = get_campaign_for_user(db, campaign_id, user)
+    if campaign.cancelled_at is not None:
+        raise HTTPException(status_code=409, detail="Cancelled campaigns cannot accept payments")
     package = db.get(AdvertisingPackage, campaign.package_id)
     if not package:
         raise HTTPException(status_code=409, detail="Campaign package no longer exists")
@@ -542,6 +546,8 @@ def publish_campaign(campaign_id: int, publisher: User = Depends(publisher_user)
     campaign = db.get(Campaign, campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.cancelled_at is not None:
+        raise HTTPException(status_code=409, detail="Cancelled campaigns cannot be published")
     if campaign.status not in {CampaignStatus.APPROVED, CampaignStatus.SCHEDULED}:
         raise HTTPException(status_code=409, detail="Only approved or scheduled campaigns can be published")
     if campaign.facebook_post_id:
