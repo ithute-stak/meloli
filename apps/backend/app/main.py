@@ -132,6 +132,21 @@ def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bear
         raise HTTPException(status_code=401, detail="Invalid, expired or revoked session") from exc
 
 
+def optional_user(credentials: HTTPAuthorizationCredentials | None = Depends(bearer), db: Session = Depends(get_db)) -> User | None:
+    if credentials is None:
+        return None
+    try:
+        return validate_token_user(credentials.credentials, db)
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid, expired or revoked session") from exc
+
+
+def package_admin(user: User = Depends(current_user)) -> User:
+    if not user.is_tenant_admin and user.role != UserRole.SUPER_ADMIN:
+        raise HTTPException(status_code=403, detail="Package administrator access required")
+    return user
+
+
 def staff_user(user: User = Depends(current_user)) -> User:
     if not user.is_tenant_admin and user.role not in {UserRole.REVIEWER, UserRole.PUBLISHER, UserRole.SUPER_ADMIN}:
         raise HTTPException(status_code=403, detail="Portal staff access required")
@@ -284,21 +299,38 @@ def me(user: User = Depends(current_user)):
 
 
 @app.get("/api/v1/packages", response_model=list[PackageOut])
-def list_packages(db: Session = Depends(get_db)):
-    return list(db.scalars(select(AdvertisingPackage).where(AdvertisingPackage.active.is_(True)).order_by(AdvertisingPackage.price)))
+def list_packages(tenant_slug: str | None = None, user: User | None = Depends(optional_user), db: Session = Depends(get_db)):
+    tenant_id = user.tenant_id if user else None
+    if tenant_id is None and tenant_slug:
+        tenant = db.scalar(select(Tenant).where(Tenant.slug == tenant_slug.lower(), Tenant.active.is_(True)))
+        if not tenant:
+            raise HTTPException(status_code=404, detail="Advertising portal not found")
+        tenant_id = tenant.id
+    if tenant_id is None:
+        default_tenant = db.scalar(select(Tenant).where(Tenant.slug == "meloli-airwaves", Tenant.active.is_(True)))
+        tenant_id = default_tenant.id if default_tenant else None
+    query = select(AdvertisingPackage).where(AdvertisingPackage.active.is_(True))
+    query = query.where(AdvertisingPackage.tenant_id == tenant_id) if tenant_id is not None else query.where(AdvertisingPackage.tenant_id.is_(None))
+    return list(db.scalars(query.order_by(AdvertisingPackage.price)))
 
 
 @app.get("/api/v1/admin/packages", response_model=list[PackageOut])
-def list_admin_packages(_: User = Depends(super_admin), db: Session = Depends(get_db)):
-    return list(db.scalars(select(AdvertisingPackage).order_by(AdvertisingPackage.active.desc(), AdvertisingPackage.price)))
+def list_admin_packages(admin: User = Depends(package_admin), db: Session = Depends(get_db)):
+    query = select(AdvertisingPackage)
+    if admin.tenant_id is not None:
+        query = query.where(AdvertisingPackage.tenant_id == admin.tenant_id)
+    else:
+        query = query.where(AdvertisingPackage.tenant_id.is_(None))
+    return list(db.scalars(query.order_by(AdvertisingPackage.active.desc(), AdvertisingPackage.price)))
 
 
 @app.post("/api/v1/admin/packages", response_model=PackageOut, status_code=201)
-def create_package(payload: PackageWrite, admin: User = Depends(super_admin), db: Session = Depends(get_db)):
+def create_package(payload: PackageWrite, admin: User = Depends(package_admin), db: Session = Depends(get_db)):
     code = payload.code.upper().strip()
-    if db.scalar(select(AdvertisingPackage).where(AdvertisingPackage.code == code)):
-        raise HTTPException(status_code=409, detail="Package code already exists")
-    package = AdvertisingPackage(code=code, name=payload.name, description=payload.description, price=payload.price, currency=payload.currency.upper(), posts_included=payload.posts_included, max_media_items=payload.max_media_items, allow_video=payload.allow_video, allow_carousel=payload.allow_carousel, active=payload.active)
+    tenant_filter = AdvertisingPackage.tenant_id == admin.tenant_id if admin.tenant_id is not None else AdvertisingPackage.tenant_id.is_(None)
+    if db.scalar(select(AdvertisingPackage).where(tenant_filter, AdvertisingPackage.code == code)):
+        raise HTTPException(status_code=409, detail="Package code already exists in this portal")
+    package = AdvertisingPackage(tenant_id=admin.tenant_id, code=code, name=payload.name, description=payload.description, price=payload.price, currency=payload.currency.upper(), posts_included=payload.posts_included, max_media_items=payload.max_media_items, allow_video=payload.allow_video, allow_carousel=payload.allow_carousel, active=payload.active)
     db.add(package)
     db.flush()
     audit(db, admin, "package.created", "advertising_package", package.id, code)
@@ -308,12 +340,15 @@ def create_package(payload: PackageWrite, admin: User = Depends(super_admin), db
 
 
 @app.put("/api/v1/admin/packages/{package_id}", response_model=PackageOut)
-def update_package(package_id: int, payload: PackageWrite, admin: User = Depends(super_admin), db: Session = Depends(get_db)):
+def update_package(package_id: int, payload: PackageWrite, admin: User = Depends(package_admin), db: Session = Depends(get_db)):
     package = db.get(AdvertisingPackage, package_id)
     if not package:
         raise HTTPException(status_code=404, detail="Package not found")
+    if package.tenant_id != admin.tenant_id:
+        raise HTTPException(status_code=403, detail="Package belongs to another portal")
     code = payload.code.upper().strip()
-    duplicate = db.scalar(select(AdvertisingPackage).where(AdvertisingPackage.code == code, AdvertisingPackage.id != package_id))
+    tenant_filter = AdvertisingPackage.tenant_id == admin.tenant_id if admin.tenant_id is not None else AdvertisingPackage.tenant_id.is_(None)
+    duplicate = db.scalar(select(AdvertisingPackage).where(tenant_filter, AdvertisingPackage.code == code, AdvertisingPackage.id != package_id))
     if duplicate:
         raise HTTPException(status_code=409, detail="Package code already exists")
     package.code = code
@@ -344,7 +379,8 @@ def list_campaigns(user: User = Depends(current_user), db: Session = Depends(get
 
 @app.post("/api/v1/campaigns", response_model=CampaignOut, status_code=201)
 def create_campaign(payload: CampaignCreate, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    package = db.scalar(select(AdvertisingPackage).where(AdvertisingPackage.code == payload.package_code.upper(), AdvertisingPackage.active.is_(True)))
+    tenant_filter = AdvertisingPackage.tenant_id == user.tenant_id if user.tenant_id is not None else AdvertisingPackage.tenant_id.is_(None)
+    package = db.scalar(select(AdvertisingPackage).where(tenant_filter, AdvertisingPackage.code == payload.package_code.upper(), AdvertisingPackage.active.is_(True)))
     if not package:
         raise HTTPException(status_code=400, detail="Advertising package is unavailable")
 
