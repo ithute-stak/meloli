@@ -29,6 +29,12 @@ class CommunicationsUpdate(BaseModel):
     webhook_enabled: bool = False
     webhook_url: str | None = Field(default=None, max_length=1000)
     webhook_bearer_token: SecretStr | None = None
+    whatsapp_enabled: bool = False
+    whatsapp_phone_number_id: str | None = Field(default=None, max_length=100)
+    whatsapp_access_token: SecretStr | None = None
+    whatsapp_graph_version: str = Field(default="v24.0", max_length=32)
+    whatsapp_template_name: str | None = Field(default=None, max_length=160)
+    whatsapp_template_language: str = Field(default="en", max_length=20)
 
 
 def _setting_row(db: Session, key: str) -> SystemSetting | None:
@@ -79,6 +85,8 @@ def enqueue_notification(db: Session, user_id: int, kind: str, title: str, messa
         db.add(NotificationDelivery(notification_id=notification.id, channel="email"))
     if bool_setting(db, "notifications.webhook_enabled"):
         db.add(NotificationDelivery(notification_id=notification.id, channel="webhook"))
+    if bool_setting(db, "notifications.whatsapp_enabled"):
+        db.add(NotificationDelivery(notification_id=notification.id, channel="whatsapp"))
     return notification
 
 
@@ -152,6 +160,53 @@ def _send_webhook(db: Session, notification: Notification, user: User) -> None:
         raise RuntimeError("Webhook returned HTTP " + str(response.status_code))
 
 
+def _normalize_phone(value: str | None) -> str:
+    if not value:
+        raise RuntimeError("Recipient phone number is missing")
+    digits = "".join(ch for ch in value if ch.isdigit())
+    if not digits:
+        raise RuntimeError("Recipient phone number is invalid")
+    if digits.startswith("0"):
+        raise RuntimeError("Recipient phone number must include country code")
+    return digits
+
+
+def _send_whatsapp(db: Session, notification: Notification, user: User) -> None:
+    phone_number_id = setting(db, "notifications.whatsapp_phone_number_id")
+    access_token = setting(db, "notifications.whatsapp_access_token")
+    version = setting(db, "notifications.whatsapp_graph_version") or "v24.0"
+    template_name = setting(db, "notifications.whatsapp_template_name")
+    language = setting(db, "notifications.whatsapp_template_language") or "en"
+    if not phone_number_id or not access_token or not template_name:
+        raise RuntimeError("WhatsApp Phone Number ID, access token and approved template name are required")
+    to = _normalize_phone(user.phone)
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "template",
+        "template": {
+            "name": template_name,
+            "language": {"code": language},
+            "components": [{
+                "type": "body",
+                "parameters": [
+                    {"type": "text", "text": notification.title[:1024]},
+                    {"type": "text", "text": notification.message[:1024]},
+                ],
+            }],
+        },
+    }
+    response = httpx.post(
+        f"https://graph.facebook.com/{version}/{phone_number_id}/messages",
+        json=payload,
+        headers={"Authorization": "Bearer " + access_token, "Content-Type": "application/json"},
+        timeout=20,
+    )
+    if response.status_code >= 400:
+        detail = response.text[:1000]
+        raise RuntimeError(f"WhatsApp Cloud API returned HTTP {response.status_code}: {detail}")
+
+
 def deliver_pending(db: Session, limit: int = 30) -> dict[str, int]:
     rows = list(db.scalars(
         select(NotificationDelivery)
@@ -171,6 +226,8 @@ def deliver_pending(db: Session, limit: int = 30) -> dict[str, int]:
                 _send_email(db, notification, user)
             elif delivery.channel == "webhook":
                 _send_webhook(db, notification, user)
+            elif delivery.channel == "whatsapp":
+                _send_whatsapp(db, notification, user)
             else:
                 raise RuntimeError("Unsupported notification channel")
             delivery.status = "sent"
@@ -198,6 +255,12 @@ def communications_status(_: User = Depends(super_admin), db: Session = Depends(
         "webhook_enabled": bool_setting(db, "notifications.webhook_enabled"),
         "webhook_url": setting(db, "notifications.webhook_url"),
         "webhook_bearer_token_configured": bool(setting(db, "notifications.webhook_bearer_token")),
+        "whatsapp_enabled": bool_setting(db, "notifications.whatsapp_enabled"),
+        "whatsapp_phone_number_id": setting(db, "notifications.whatsapp_phone_number_id"),
+        "whatsapp_access_token_configured": bool(setting(db, "notifications.whatsapp_access_token")),
+        "whatsapp_graph_version": setting(db, "notifications.whatsapp_graph_version") or "v24.0",
+        "whatsapp_template_name": setting(db, "notifications.whatsapp_template_name"),
+        "whatsapp_template_language": setting(db, "notifications.whatsapp_template_language") or "en",
     }
 
 
@@ -215,8 +278,56 @@ def update_communications(payload: CommunicationsUpdate, _: User = Depends(super
     set_setting(db, "notifications.webhook_url", payload.webhook_url)
     if payload.webhook_bearer_token is not None:
         set_setting(db, "notifications.webhook_bearer_token", payload.webhook_bearer_token.get_secret_value(), encrypted=True)
+    set_setting(db, "notifications.whatsapp_enabled", str(payload.whatsapp_enabled).lower())
+    set_setting(db, "notifications.whatsapp_phone_number_id", payload.whatsapp_phone_number_id)
+    set_setting(db, "notifications.whatsapp_graph_version", payload.whatsapp_graph_version)
+    set_setting(db, "notifications.whatsapp_template_name", payload.whatsapp_template_name)
+    set_setting(db, "notifications.whatsapp_template_language", payload.whatsapp_template_language)
+    if payload.whatsapp_access_token is not None:
+        set_setting(db, "notifications.whatsapp_access_token", payload.whatsapp_access_token.get_secret_value(), encrypted=True)
     db.commit()
     return communications_status(_, db)
+
+
+class DeliveryTest(BaseModel):
+    recipient: str = Field(min_length=3, max_length=255)
+
+
+@router.post("/api/v1/system/communications/test-email")
+def test_email(payload: DeliveryTest, _: User = Depends(super_admin), db: Session = Depends(get_db)):
+    try:
+        send_direct_email(
+            db,
+            payload.recipient,
+            "Meloli notification delivery test",
+            "This is a test email from the Meloli Airwaves Advertising Portal. SMTP delivery is working.",
+        )
+        return {"ok": True, "recipient": payload.recipient}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/api/v1/system/communications/test-whatsapp")
+def test_whatsapp(payload: DeliveryTest, admin: User = Depends(super_admin), db: Session = Depends(get_db)):
+    notification = Notification(
+        user_id=admin.id,
+        kind="delivery_test",
+        title="Meloli delivery test",
+        message="WhatsApp Cloud API delivery is working for the Meloli Airwaves Advertising Portal.",
+    )
+    db.add(notification)
+    db.flush()
+    original_phone = admin.phone
+    admin.phone = payload.recipient
+    try:
+        _send_whatsapp(db, notification, admin)
+        db.rollback()
+        return {"ok": True, "recipient": payload.recipient}
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        admin.phone = original_phone
 
 
 @router.get("/api/v1/admin/notification-deliveries")
