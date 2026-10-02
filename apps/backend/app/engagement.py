@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .models import AuthSession, AuditLog, Campaign, CampaignPerformanceSnapshot, CampaignStatus, SupportTicket, TicketStatus, User, UserRole
+from .models import AuthSession, AuditLog, Campaign, CampaignMedia, CampaignPerformanceSnapshot, CampaignStatus, SupportTicket, TicketStatus, User, UserRole
 from .security import validate_token_user, decrypt_secret, encrypt_secret, hash_password, verify_password
 import pyotp
 
@@ -138,7 +138,9 @@ def duplicate_campaign(campaign_id: int, user: User = Depends(current_user), db:
     )
     db.add(clone)
     db.flush()
-    audit(db, user, "campaign.duplicated", "campaign", clone.id, f"Copied from campaign {source.id}")
+    for item in source.media_items:
+        db.add(CampaignMedia(campaign_id=clone.id, url=item.url, content_type=item.content_type, position=item.position))
+    audit(db, user, "campaign.duplicated", "campaign", clone.id, f"Copied from campaign {source.id}; media {len(source.media_items)}")
     db.commit()
     db.refresh(clone)
     return {"id": clone.id, "title": clone.title, "status": clone.status, "source_campaign_id": source.id}
