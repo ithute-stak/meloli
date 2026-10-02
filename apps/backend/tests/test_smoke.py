@@ -34,6 +34,8 @@ from app.tenant_billing import process_tenant_subscription_lifecycle  # noqa: E4
 from app.automation import run_job_if_due  # noqa: E402
 from app import competition as competition_module  # noqa: E402
 from app.competition import ImportedComment, ImportedReaction, close_due_competitions  # noqa: E402
+from app.meta_webhooks import process_meta_webhook_events  # noqa: E402
+from app import health_automation as health_module  # noqa: E402
 
 
 def auth(token: str) -> dict[str, str]:
@@ -553,6 +555,63 @@ def test_advertising_workflow_smoke():
             assert db.query(MetaWebhookEvent).filter(MetaWebhookEvent.tenant_id == tenant_a.json()["id"]).count() >= 1
         finally:
             db.close()
+
+        # Failed webhook processing moves to a dead-letter state after the
+        # retry budget and can be explicitly requeued by a tenant admin.
+        db = SessionLocal()
+        try:
+            poison = MetaWebhookEvent(
+                tenant_id=tenant_a.json()["id"],
+                page_id="page-alpha-facebook-id",
+                object_type="page",
+                payload_sha256="f" * 64,
+                payload_json="{invalid-json",
+                status="failed",
+                attempts=4,
+            )
+            db.add(poison)
+            db.commit()
+            poison_id = poison.id
+            webhook_process = process_meta_webhook_events(db, limit=50)
+            assert webhook_process["failed"] >= 1
+            db.expire_all()
+            poison = db.get(MetaWebhookEvent, poison_id)
+            assert poison.status == "dead_letter"
+            assert poison.attempts == 5
+        finally:
+            db.close()
+
+        webhook_events = client.get("/api/v1/admin/meta/webhook-events", headers=auth(alpha_token))
+        assert webhook_events.status_code == 200, webhook_events.text
+        assert any(row["id"] == poison_id and row["status"] == "dead_letter" for row in webhook_events.json())
+        webhook_retry = client.post(
+            f"/api/v1/admin/meta/webhook-events/{poison_id}/retry",
+            headers=auth(alpha_token),
+        )
+        assert webhook_retry.status_code == 200, webhook_retry.text
+        assert webhook_retry.json()["status"] == "pending"
+        assert webhook_retry.json()["attempts"] == 0
+
+        # Meta health monitoring records the health state exposed to the tenant
+        # dashboard without needing a real network call in tests.
+        original_meta_get = health_module.httpx.get
+        class HealthyMetaResponse:
+            is_error = False
+            content = b'{"id":"page-alpha-facebook-id","name":"Page Alpha"}'
+            def json(self):
+                return {"id": "page-alpha-facebook-id", "name": "Page Alpha"}
+        health_module.httpx.get = lambda *args, **kwargs: HealthyMetaResponse()
+        db = SessionLocal()
+        try:
+            meta_health = health_module.check_meta_integrations(db)
+            assert meta_health["checked"] >= 1
+            assert meta_health["healthy"] >= 1
+        finally:
+            health_module.httpx.get = original_meta_get
+            db.close()
+        alpha_meta_health = client.get("/api/v1/tenant-admin/meta", headers=auth(alpha_token))
+        assert alpha_meta_health.status_code == 200, alpha_meta_health.text
+        assert alpha_meta_health.json()["health_status"] == "healthy"
 
         alpha_campaign = client.post(
             "/api/v1/campaigns",
