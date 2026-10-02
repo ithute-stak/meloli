@@ -1,11 +1,14 @@
+import io
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
 
 from .db import get_db
 from .models import AdvertiserSubscription, AuditLog, Campaign, CorporateAccount, Payment, PromoCode, SubscriptionPlan, User, UserRole
@@ -298,6 +301,63 @@ def corporate_statement(user_id: int, _: User = Depends(super_admin), db: Sessio
             for payment, campaign in rows
         ],
     }
+
+
+@router.get("/api/v1/admin/advertisers/{user_id}/corporate/statement.pdf")
+def corporate_statement_pdf(user_id: int, _: User = Depends(super_admin), db: Session = Depends(get_db)):
+    data = corporate_statement(user_id, _, db)
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    y = height - 55
+    pdf.setFont("Helvetica-Bold", 18)
+    pdf.drawString(50, y, "Meloli Airwaves")
+    y -= 24
+    pdf.setFont("Helvetica-Bold", 13)
+    pdf.drawString(50, y, "Corporate Advertising Statement")
+    y -= 24
+    pdf.setFont("Helvetica", 9)
+    pdf.drawString(50, y, f"Advertiser: {data['advertiser']['name']}")
+    y -= 14
+    pdf.drawString(50, y, f"Email: {data['advertiser']['email']}")
+    y -= 14
+    pdf.drawString(50, y, f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    y -= 26
+    account = data["account"]
+    pdf.setFont("Helvetica-Bold", 10)
+    pdf.drawString(50, y, f"Credit limit: LSL {account['credit_limit']:,.2f}")
+    pdf.drawString(220, y, f"Used: LSL {account['credit_used']:,.2f}")
+    pdf.drawString(360, y, f"Available: LSL {account['available_credit']:,.2f}")
+    y -= 26
+    pdf.setFont("Helvetica-Bold", 9)
+    pdf.drawString(50, y, "Date")
+    pdf.drawString(130, y, "Campaign")
+    pdf.drawString(430, y, "Amount")
+    y -= 12
+    pdf.line(50, y, width - 50, y)
+    y -= 16
+    pdf.setFont("Helvetica", 8)
+    for tx in data["transactions"]:
+        if y < 70:
+            pdf.showPage()
+            y = height - 55
+            pdf.setFont("Helvetica", 8)
+        created = tx["created_at"]
+        created_text = created.strftime("%Y-%m-%d") if hasattr(created, "strftime") else str(created)[:10]
+        pdf.drawString(50, y, created_text)
+        pdf.drawString(130, y, str(tx["campaign"])[:48])
+        pdf.drawRightString(width - 50, y, f"{tx['currency']} {tx['amount']:,.2f}")
+        y -= 15
+    y -= 10
+    pdf.setFont("Helvetica-Bold", 10)
+    pdf.drawRightString(width - 50, max(50, y), f"Outstanding balance: LSL {account['credit_used']:,.2f}")
+    pdf.save()
+    buffer.seek(0)
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="meloli-corporate-statement-{user_id}.pdf"'},
+    )
 
 
 @router.post("/api/v1/admin/advertisers/{user_id}/corporate/settle")
