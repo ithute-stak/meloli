@@ -81,6 +81,9 @@ class CampaignOut(BaseModel):
     scheduled_publish_at: datetime | None
     status: CampaignStatus
     reviewer_note: str | None
+    cancelled_at: datetime | None
+    cancellation_reason: str | None
+    cancelled_by_user_id: int | None
     facebook_post_id: str | None
     facebook_post_url: str | None
     published_at: datetime | None
