@@ -75,6 +75,36 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  restore-db:
+    image: postgres:17-alpine
+    profiles: ["restore"]
+    environment:
+      POSTGRES_DB: meloli_restore
+      POSTGRES_USER: meloli_restore
+      POSTGRES_PASSWORD: restore_only
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U meloli_restore -d meloli_restore"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  restore-drill:
+    build: ./apps/backup
+    profiles: ["restore"]
+    entrypoint: ["/usr/local/bin/meloli-restore-drill"]
+    environment:
+      PGHOST: restore-db
+      PGPORT: 5432
+      PGDATABASE: meloli_restore
+      PGUSER: meloli_restore
+      PGPASSWORD: restore_only
+    volumes:
+      - meloli_backups:/backups:ro
+      - meloli_restore_media:/restore-media
+    depends_on:
+      restore-db:
+        condition: service_healthy
+
   frontend:
     build: ./apps/frontend
     environment:
