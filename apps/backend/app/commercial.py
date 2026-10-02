@@ -422,7 +422,7 @@ def settle_corporate(user_id: int, payload: CorporateSettlementWrite, admin: Use
             break
         credited = sum(
             (Decimal(str(value)) for value in db.scalars(
-                select(CorporateCreditNote.amount).where(CorporateCreditNote.invoice_id == invoice.id)
+                select(CorporateCreditNote.applied_to_invoice_amount).where(CorporateCreditNote.invoice_id == invoice.id)
             )),
             Decimal("0.00"),
         )
@@ -560,8 +560,8 @@ def list_corporate_invoices(_: User = Depends(super_admin), db: Session = Depend
             "advertiser": (user.business_name or user.full_name) if user else None,
             "amount": float(invoice.amount),
             "amount_paid": float(invoice.amount_paid),
-            "credited_amount": float(db.scalar(select(func.coalesce(func.sum(CorporateCreditNote.amount), 0)).where(CorporateCreditNote.invoice_id == invoice.id)) or 0),
-            "balance": max(0.0, float(invoice.amount) - float(invoice.amount_paid) - float(db.scalar(select(func.coalesce(func.sum(CorporateCreditNote.amount), 0)).where(CorporateCreditNote.invoice_id == invoice.id)) or 0)),
+            "credited_amount": float(db.scalar(select(func.coalesce(func.sum(CorporateCreditNote.applied_to_invoice_amount), 0)).where(CorporateCreditNote.invoice_id == invoice.id)) or 0),
+            "balance": max(0.0, float(invoice.amount) - float(invoice.amount_paid) - float(db.scalar(select(func.coalesce(func.sum(CorporateCreditNote.applied_to_invoice_amount), 0)).where(CorporateCreditNote.invoice_id == invoice.id)) or 0)),
             "currency": invoice.currency,
             "status": invoice.status,
             "period_key": invoice.period_key,
@@ -634,7 +634,7 @@ def _corporate_invoice_response(invoice: CorporateInvoice, account: CorporateAcc
     pdf.line(46, y - 30, width - 46, y - 30)
 
     total_y = y - 74
-    credited_amount = float(db.scalar(select(func.coalesce(func.sum(CorporateCreditNote.amount), 0)).where(CorporateCreditNote.invoice_id == invoice.id)) or 0)
+    credited_amount = float(db.scalar(select(func.coalesce(func.sum(CorporateCreditNote.applied_to_invoice_amount), 0)).where(CorporateCreditNote.invoice_id == invoice.id)) or 0)
     pdf.setFillColor(MUTED)
     pdf.setFont("Helvetica", 9)
     pdf.drawRightString(width - 175, total_y, "Paid")
