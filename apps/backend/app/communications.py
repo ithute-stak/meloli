@@ -270,7 +270,7 @@ def update_communications(payload: CommunicationsUpdate, admin: User = Depends(s
     existing_whatsapp_token = setting(db, "notifications.whatsapp_access_token")
     if payload.email_enabled and (not payload.smtp_host or not payload.from_email):
         raise HTTPException(status_code=400, detail="SMTP host and from email are required before email delivery can be enabled")
-    if payload.smtp_username and not (payload.smtp_password or existing_smtp_password):
+    if payload.email_enabled and payload.smtp_username and not (payload.smtp_password or existing_smtp_password):
         raise HTTPException(status_code=400, detail="SMTP password is required when an SMTP username is configured")
     if payload.webhook_enabled and not payload.webhook_url:
         raise HTTPException(status_code=400, detail="Webhook URL is required before webhook delivery can be enabled")
