@@ -666,6 +666,147 @@ def _corporate_invoice_response(invoice: CorporateInvoice, account: CorporateAcc
     )
 
 
+def _credit_note_response(note: CorporateCreditNote, account: CorporateAccount, user: User, db: Session) -> Response:
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    pdf.setTitle(f"Meloli credit note {note.credit_note_number}")
+    draw_header(pdf, db, "Credit note", note.credit_note_number, "CREDIT")
+
+    invoice = db.get(CorporateInvoice, note.invoice_id) if note.invoice_id else None
+    payment = db.get(Payment, note.payment_id)
+
+    top = height - 154
+    pdf.setFillColor(LIGHT)
+    pdf.roundRect(46, top - 92, width - 92, 92, 14, fill=1, stroke=0)
+    info_label(pdf, 62, top - 22, "Issued to", user.business_name or user.full_name)
+    info_label(pdf, 62, top - 58, "Email", user.email)
+    info_label(pdf, 305, top - 22, "Original invoice", invoice.invoice_number if invoice else "Not yet invoiced", 42)
+    info_label(pdf, 305, top - 58, "Issued", as_utc(note.issued_at).strftime("%d %b %Y") if note.issued_at else "—")
+
+    y = top - 130
+    pdf.setFillColor(NAVY)
+    pdf.roundRect(46, y - 24, width - 92, 24, 8, fill=1, stroke=0)
+    pdf.setFillColor(colors.white)
+    pdf.setFont("Helvetica-Bold", 8)
+    pdf.drawString(58, y - 16, "DESCRIPTION")
+    pdf.drawRightString(width - 58, y - 16, "CREDIT")
+
+    y -= 50
+    pdf.setFillColor(NAVY)
+    pdf.setFont("Helvetica-Bold", 10)
+    pdf.drawString(58, y, "Advertising refund / account credit")
+    pdf.drawRightString(width - 58, y, f"{note.currency} {float(note.amount):,.2f}")
+    pdf.setFillColor(MUTED)
+    pdf.setFont("Helvetica", 8.5)
+    reason = (note.reason or "Approved refund").replace("\n", " ")
+    pdf.drawString(58, y - 16, reason[:78])
+    if payment:
+        pdf.drawString(58, y - 31, f"Payment #{payment.id} · {payment.method.replace('_', ' ').title()} · {payment.reference or 'No reference'}"[:92])
+
+    total_y = y - 78
+    pdf.setFillColor(MUTED)
+    pdf.setFont("Helvetica", 9)
+    pdf.drawRightString(width - 175, total_y, "Credit note total")
+    pdf.setFillColor(RED)
+    pdf.setFont("Helvetica-Bold", 18)
+    pdf.drawRightString(width - 58, total_y - 4, f"{note.currency} {float(note.amount):,.2f}")
+    pdf.setFillColor(MUTED)
+    pdf.setFont("Helvetica", 8.5)
+    pdf.drawRightString(width - 58, total_y - 26, f"Applied to invoice: {note.currency} {float(note.applied_to_invoice_amount):,.2f}")
+
+    pdf.setFillColor(colors.HexColor("#ECFDF5"))
+    pdf.roundRect(46, 112, width - 92, 54, 12, fill=1, stroke=0)
+    pdf.setFillColor(colors.HexColor("#15803D"))
+    pdf.setFont("Helvetica-Bold", 8)
+    pdf.drawString(60, 146, "CREDIT NOTE ISSUED")
+    pdf.setFillColor(NAVY)
+    pdf.setFont("Helvetica", 8)
+    pdf.drawString(60, 130, "This document records an approved refund or credit against the Meloli corporate advertising account.")
+    pdf.drawString(60, 117, "Keep this credit note together with the original invoice and payment records.")
+
+    draw_footer(pdf)
+    pdf.save()
+    return Response(
+        buffer.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="meloli-{note.credit_note_number.lower()}.pdf"'},
+    )
+
+
+@router.get("/api/v1/admin/credit-notes")
+def list_credit_notes(_: User = Depends(super_admin), db: Session = Depends(get_db)):
+    rows = list(db.scalars(select(CorporateCreditNote).order_by(CorporateCreditNote.issued_at.desc()).limit(200)))
+    result = []
+    for note in rows:
+        account = db.get(CorporateAccount, note.corporate_account_id)
+        user = db.get(User, account.user_id) if account else None
+        invoice = db.get(CorporateInvoice, note.invoice_id) if note.invoice_id else None
+        result.append({
+            "id": note.id,
+            "credit_note_number": note.credit_note_number,
+            "user_id": account.user_id if account else None,
+            "advertiser": (user.business_name or user.full_name) if user else None,
+            "invoice_id": note.invoice_id,
+            "invoice_number": invoice.invoice_number if invoice else None,
+            "payment_id": note.payment_id,
+            "refund_request_id": note.refund_request_id,
+            "amount": float(note.amount),
+            "applied_to_invoice_amount": float(note.applied_to_invoice_amount),
+            "currency": note.currency,
+            "reason": note.reason,
+            "issued_at": note.issued_at,
+        })
+    return result
+
+
+@router.get("/api/v1/commercial/my-corporate/credit-notes")
+def my_credit_notes(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if user.role != UserRole.ADVERTISER:
+        raise HTTPException(status_code=403, detail="Advertiser account required")
+    account = db.scalar(select(CorporateAccount).where(CorporateAccount.user_id == user.id))
+    if not account:
+        return []
+    rows = list(db.scalars(
+        select(CorporateCreditNote)
+        .where(CorporateCreditNote.corporate_account_id == account.id)
+        .order_by(CorporateCreditNote.issued_at.desc())
+    ))
+    return [{
+        "id": note.id,
+        "credit_note_number": note.credit_note_number,
+        "invoice_id": note.invoice_id,
+        "payment_id": note.payment_id,
+        "refund_request_id": note.refund_request_id,
+        "amount": float(note.amount),
+        "applied_to_invoice_amount": float(note.applied_to_invoice_amount),
+        "currency": note.currency,
+        "reason": note.reason,
+        "issued_at": note.issued_at,
+    } for note in rows]
+
+
+@router.get("/api/v1/admin/credit-notes/{note_id}/pdf")
+def admin_credit_note_pdf(note_id: int, _: User = Depends(super_admin), db: Session = Depends(get_db)):
+    note = db.get(CorporateCreditNote, note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="Credit note not found")
+    account = db.get(CorporateAccount, note.corporate_account_id)
+    user = db.get(User, account.user_id) if account else None
+    if not account or not user:
+        raise HTTPException(status_code=409, detail="Credit note account data is incomplete")
+    return _credit_note_response(note, account, user, db)
+
+
+@router.get("/api/v1/commercial/my-corporate/credit-notes/{note_id}/pdf")
+def my_credit_note_pdf(note_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    account = db.scalar(select(CorporateAccount).where(CorporateAccount.user_id == user.id))
+    note = db.get(CorporateCreditNote, note_id)
+    if not account or not note or note.corporate_account_id != account.id:
+        raise HTTPException(status_code=404, detail="Credit note not found")
+    return _credit_note_response(note, account, user, db)
+
+
 @router.get("/api/v1/admin/corporate-invoices/{invoice_id}/pdf")
 def corporate_invoice_record_pdf(invoice_id: int, _: User = Depends(super_admin), db: Session = Depends(get_db)):
     invoice = db.get(CorporateInvoice, invoice_id)
