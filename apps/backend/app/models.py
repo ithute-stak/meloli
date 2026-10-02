@@ -334,3 +334,27 @@ class AuthSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+
+class CorporateInvoiceLine(Base):
+    __tablename__ = "corporate_invoice_lines"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    invoice_id: Mapped[int] = mapped_column(ForeignKey("corporate_invoices.id"), index=True)
+    payment_id: Mapped[int] = mapped_column(ForeignKey("payments.id"), unique=True, index=True)
+    amount: Mapped[float] = mapped_column(Numeric(12, 2))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CorporateCreditNote(Base):
+    __tablename__ = "corporate_credit_notes"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    credit_note_number: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    corporate_account_id: Mapped[int] = mapped_column(ForeignKey("corporate_accounts.id"), index=True)
+    invoice_id: Mapped[int | None] = mapped_column(ForeignKey("corporate_invoices.id"), nullable=True, index=True)
+    payment_id: Mapped[int] = mapped_column(ForeignKey("payments.id"), index=True)
+    refund_request_id: Mapped[int | None] = mapped_column(ForeignKey("refund_requests.id"), nullable=True, unique=True, index=True)
+    amount: Mapped[float] = mapped_column(Numeric(12, 2))
+    currency: Mapped[str] = mapped_column(String(8), default="LSL")
+    reason: Mapped[str] = mapped_column(Text)
+    issued_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
