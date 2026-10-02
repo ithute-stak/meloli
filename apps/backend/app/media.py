@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from .db import get_db
 from .models import User
 from .performance import router as performance_router
-from .security import decode_access_token
+from .security import validate_token_user
 
 router = APIRouter()
 bearer = HTTPBearer(auto_error=False)
@@ -32,13 +32,9 @@ def authenticated_user(credentials: HTTPAuthorizationCredentials | None = Depend
     if credentials is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
     try:
-        user_id = int(decode_access_token(credentials.credentials)["sub"])
+        return validate_token_user(credentials.credentials, db)
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token") from exc
-    user = db.get(User, user_id)
-    if not user or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account is unavailable")
-    return user
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid, expired or revoked session") from exc
 
 
 @router.post("/api/v1/media", status_code=201)
