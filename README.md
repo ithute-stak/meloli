@@ -76,6 +76,23 @@ Key settings:
 - `BACKUP_MAX_AGE_HOURS` — default `30`; older backups are flagged as stale in Operations Control Centre
 
 A restore should be performed as an operator maintenance task, not from the web UI. Use a separate test database/volume first, restore the selected PostgreSQL dump with `pg_restore`, extract the matching media archive, run `alembic upgrade head`, and verify `/health`, campaign documents, media access and login before restoring production. Keep the original production volumes untouched until the drill has been validated.
+## Growth, referrals and corporate API
+
+Super Admin can create referral partners in **Growth & Referrals**. Each partner receives a code and can share a registration link such as `/register?ref=AGENCY10`. Referred advertisers are permanently attributed to that partner, and commission reporting uses only currently confirmed paid transactions.
+
+Approved corporate-credit advertisers can also receive scoped machine credentials from **Corporate API**. The API key is shown once, stored only as a SHA-256 hash, and can be disabled from the dashboard.
+
+Corporate clients can:
+
+- submit campaigns using `POST /api/v1/corporate-api/campaigns` with the `X-API-Key` header
+- read their own campaign statuses from `GET /api/v1/corporate-api/campaigns`
+- receive HMAC-SHA256 signed campaign lifecycle webhooks when a webhook URL is configured
+
+Webhook requests include the `X-Meloli-Signature: sha256=...` header. Corporate API campaign submission charges the advertiser’s approved corporate credit account immediately and will fail when available credit is insufficient.
+
+## Progressive Web App
+
+The frontend includes a web-app manifest, Meloli PWA icons and a service worker. Eligible browsers can install the portal as a standalone app. The service worker keeps a lightweight navigation shell available when the network is temporarily unavailable; transactional/API operations still require connectivity.
 ## Testing and CI
 
 GitHub Actions runs:
