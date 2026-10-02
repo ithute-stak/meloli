@@ -35,6 +35,10 @@ class TenantProfileWrite(BaseModel):
     facebook_page_id: str | None = Field(default=None, max_length=120)
     logo_url: str | None = Field(default=None, max_length=1000)
     accent_color: str = Field(default="#e31545", pattern=r"^#[0-9A-Fa-f]{6}$")
+    email_sender_name: str | None = Field(default=None, max_length=180)
+    support_email: EmailStr | None = None
+    support_phone: str | None = Field(default=None, max_length=60)
+    document_footer: str | None = Field(default=None, max_length=240)
 
 
 class DomainWrite(BaseModel):
@@ -369,6 +373,10 @@ def tenant_admin_profile(admin: User = Depends(tenant_admin), db: Session = Depe
     domains = list(db.scalars(select(TenantDomain).where(TenantDomain.tenant_id == admin.tenant_id).order_by(TenantDomain.created_at.desc())))
     return {
         **tenant_payload(tenant),
+        "email_sender_name": tenant_setting(db, tenant.id, "branding.email_sender_name") or tenant.name,
+        "support_email": tenant_setting(db, tenant.id, "branding.support_email"),
+        "support_phone": tenant_setting(db, tenant.id, "branding.support_phone"),
+        "document_footer": tenant_setting(db, tenant.id, "branding.document_footer"),
         "portal_cname_target": os.getenv("PORTAL_CNAME_TARGET", "portal.example.com"),
         "domains": [{
             "id": row.id,
@@ -389,9 +397,19 @@ def update_tenant_profile(payload: TenantProfileWrite, admin: User = Depends(ten
     tenant.facebook_page_id = facebook_page_id
     tenant.logo_url = payload.logo_url
     tenant.accent_color = payload.accent_color
+    set_tenant_setting(db, tenant.id, "branding.email_sender_name", payload.email_sender_name.strip() if payload.email_sender_name else None)
+    set_tenant_setting(db, tenant.id, "branding.support_email", str(payload.support_email) if payload.support_email else None)
+    set_tenant_setting(db, tenant.id, "branding.support_phone", payload.support_phone.strip() if payload.support_phone else None)
+    set_tenant_setting(db, tenant.id, "branding.document_footer", payload.document_footer.strip() if payload.document_footer else None)
     db.add(AuditLog(actor_user_id=admin.id, action="tenant.profile_updated", entity_type="tenant", entity_id=str(tenant.id), detail=tenant.slug))
     db.commit()
-    return tenant_payload(tenant)
+    return {
+        **tenant_payload(tenant),
+        "email_sender_name": tenant_setting(db, tenant.id, "branding.email_sender_name") or tenant.name,
+        "support_email": tenant_setting(db, tenant.id, "branding.support_email"),
+        "support_phone": tenant_setting(db, tenant.id, "branding.support_phone"),
+        "document_footer": tenant_setting(db, tenant.id, "branding.document_footer"),
+    }
 
 
 @router.post("/api/v1/tenant-admin/domains", status_code=201)
