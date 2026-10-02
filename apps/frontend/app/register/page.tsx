@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, BadgePercent, Building2, Loader2, LockKeyhole, Mail, Phone, UserRound } from "lucide-react";
 import { api, AuthResponse, saveSession } from "@/lib/api";
@@ -11,6 +11,7 @@ export default function RegisterPage(){
   const [form,setForm]=useState({full_name:"",business_name:"",email:"",phone:"",password:"",referral_code:""});
   const [error,setError]=useState(""); const [loading,setLoading]=useState(false);
   const update=(key:string,value:string)=>setForm(v=>({...v,[key]:value}));
+  useEffect(()=>{const code=new URLSearchParams(window.location.search).get("ref");if(code)setForm(v=>({...v,referral_code:code.toUpperCase()}));},[]);
   async function submit(e:FormEvent){
     e.preventDefault();setError("");setLoading(true);
     try{
