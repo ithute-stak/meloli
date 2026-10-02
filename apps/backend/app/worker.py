@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 
 from .db import SessionLocal
 from .communications import deliver_pending, enqueue_notification
-from .commercial import expire_subscriptions
+from .commercial import expire_subscriptions, process_commercial_alerts
 from .meta_service import MetaError, publish_campaign as publish_to_meta
 from .models import Campaign, CampaignStatus, PublicationAttempt, PublicationStatus, SystemSetting
 from .security import decrypt_secret
@@ -28,6 +28,7 @@ def run_once() -> int:
         version = setting(db, "meta.graph_api_version")
         deliver_pending(db)
         expire_subscriptions(db)
+        process_commercial_alerts(db)
         if not page_id or not token or not version:
             return 0
 
