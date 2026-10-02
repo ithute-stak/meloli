@@ -385,6 +385,8 @@ def tenant_admin_profile(admin: User = Depends(tenant_admin), db: Session = Depe
             "status": row.status,
             "verification_token": row.verification_token,
             "verified_at": row.verified_at,
+            "health_status": tenant_setting(db, tenant.id, f"health.domain.{row.id}.status"),
+            "health_detail": tenant_setting(db, tenant.id, f"health.domain.{row.id}.detail"),
         } for row in domains],
     }
 
@@ -714,6 +716,9 @@ def tenant_meta_status(admin: User = Depends(tenant_admin), db: Session = Depend
         "graph_api_version": tenant_setting(db, tenant_id, "meta.graph_api_version") or "v24.0",
         "connected": tenant_setting(db, tenant_id, "meta.connected") == "true",
         "page_name": tenant_setting(db, tenant_id, "meta.page_name"),
+        "health_status": tenant_setting(db, tenant_id, "health.meta.status"),
+        "health_detail": tenant_setting(db, tenant_id, "health.meta.detail"),
+        "health_checked_at": tenant_setting(db, tenant_id, "health.meta.status.checked_at"),
     }
 
 
