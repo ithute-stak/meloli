@@ -70,6 +70,12 @@ def audit(db: Session, actor: User, action: str, entity_type: str, entity_id: in
     db.add(AuditLog(actor_user_id=actor.id, action=action, entity_type=entity_type, entity_id=str(entity_id) if entity_id is not None else None, detail=detail))
 
 
+def as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
 def promo_for_code(db: Session, code: str | None) -> PromoCode | None:
     if not code:
         return None
@@ -77,9 +83,11 @@ def promo_for_code(db: Session, code: str | None) -> PromoCode | None:
     if not promo or not promo.active:
         raise HTTPException(status_code=400, detail="Promotion code is invalid or inactive")
     now = datetime.now(timezone.utc)
-    if promo.starts_at and promo.starts_at > now:
+    starts_at = as_utc(promo.starts_at)
+    ends_at = as_utc(promo.ends_at)
+    if starts_at and starts_at > now:
         raise HTTPException(status_code=400, detail="Promotion code is not active yet")
-    if promo.ends_at and promo.ends_at < now:
+    if ends_at and ends_at < now:
         raise HTTPException(status_code=400, detail="Promotion code has expired")
     if promo.max_uses is not None and promo.uses >= promo.max_uses:
         raise HTTPException(status_code=400, detail="Promotion code usage limit has been reached")
@@ -119,7 +127,7 @@ def my_commercial_account(user: User = Depends(current_user), db: Session = Depe
             "period_start": subscription.period_start,
             "period_end": subscription.period_end,
             "remaining_posts": subscription.remaining_posts,
-            "active": subscription.active and subscription.period_end >= datetime.now(timezone.utc),
+            "active": subscription.active and as_utc(subscription.period_end) >= datetime.now(timezone.utc),
         },
     }
 
