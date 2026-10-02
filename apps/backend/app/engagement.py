@@ -109,6 +109,7 @@ def change_password(payload: PasswordChange, user: User = Depends(current_user),
     if verify_password(payload.new_password, user.password_hash):
         raise HTTPException(status_code=400, detail="New password must be different")
     user.password_hash = hash_password(payload.new_password)
+    user.auth_version = int(user.auth_version or 0) + 1
     audit(db, user, "password.changed", "user", user.id)
     db.commit()
     return {"changed": True}
