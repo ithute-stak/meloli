@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from .communications import send_direct_email
 from .db import get_db
-from .models import AdvertiserSubscription, AuthSession, AuditLog, Campaign, CampaignStatus, CorporateAccount, PasswordResetToken, Payment, PaymentStatus, RefundRequest, User, UserRole
+from .models import AdvertiserSubscription, AuthSession, AuditLog, Campaign, CampaignStatus, CorporateAccount, CorporateCreditNote, CorporateInvoice, CorporateInvoiceLine, PasswordResetToken, Payment, PaymentStatus, RefundRequest, User, UserRole
 from .security import validate_token_user, hash_password
 
 router = APIRouter()
@@ -202,6 +202,36 @@ def decide_refund(refund_id: int, payload: RefundDecision, admin: User = Depends
             account = db.scalar(select(CorporateAccount).where(CorporateAccount.user_id == campaign.advertiser_id))
             if account:
                 account.credit_used = max(0, float(account.credit_used) - float(payment.amount))
+                invoice_line = db.scalar(select(CorporateInvoiceLine).where(CorporateInvoiceLine.payment_id == payment.id))
+                invoice = db.get(CorporateInvoice, invoice_line.invoice_id) if invoice_line else None
+                applied = min(float(payment.amount), float(invoice_line.amount)) if invoice_line else 0.0
+                credit_note = CorporateCreditNote(
+                    credit_note_number=f"CN-MEL-{row.id:06d}",
+                    corporate_account_id=account.id,
+                    invoice_id=invoice.id if invoice else None,
+                    payment_id=payment.id,
+                    refund_request_id=row.id,
+                    amount=payment.amount,
+                    applied_to_invoice_amount=applied,
+                    currency=payment.currency,
+                    reason=row.reason,
+                    issued_by_user_id=admin.id,
+                )
+                db.add(credit_note)
+                db.flush()
+                if invoice:
+                    total_credits = sum(
+                        float(v or 0)
+                        for v in db.scalars(
+                            select(CorporateCreditNote.applied_to_invoice_amount)
+                            .where(CorporateCreditNote.invoice_id == invoice.id)
+                        )
+                    )
+                    effective = max(0.0, float(invoice.amount) - float(invoice.amount_paid) - total_credits)
+                    if effective <= 0:
+                        invoice.status = "credited" if float(invoice.amount_paid) == 0 and total_credits >= float(invoice.amount) else "closed"
+                    else:
+                        invoice.status = "partial"
         elif payment.method == "subscription":
             subscription = db.scalar(
                 select(AdvertiserSubscription)
