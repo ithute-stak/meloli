@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from .db import get_db
 from .meta_service import MetaError, fetch_post_performance
 from .models import Campaign, CampaignPerformance, CampaignPerformanceSnapshot, CampaignStatus, User, UserRole
-from .security import decode_access_token, decrypt_secret
+from .security import validate_token_user, decrypt_secret
 
 router = APIRouter()
 bearer = HTTPBearer(auto_error=False)
