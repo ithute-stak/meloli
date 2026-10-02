@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 from .db import get_db
 from .meta_service import MetaError, fetch_post_performance
 from .models import Campaign, CampaignPerformance, CampaignPerformanceSnapshot, CampaignStatus, User, UserRole
-from .security import validate_token_user, decrypt_secret
+from .security import validate_token_user
+from .tenancy import tenant_setting
 
 router = APIRouter()
 bearer = HTTPBearer(auto_error=False)
@@ -66,20 +67,14 @@ def publisher_user(user: User = Depends(authenticated_user)) -> User:
     return user
 
 
-def setting(db: Session, key: str) -> str | None:
-    from .models import SystemSetting
-
-    row = db.scalar(select(SystemSetting).where(SystemSetting.key == key))
-    if not row or not row.value:
-        return None
-    return decrypt_secret(row.value) if row.encrypted else row.value
-
-
 def campaign_for_user(db: Session, campaign_id: int, user: User) -> Campaign:
     campaign = db.get(Campaign, campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    if user.role == UserRole.ADVERTISER and campaign.advertiser_id != user.id:
+    if user.role != UserRole.SUPER_ADMIN:
+        if not user.tenant_id or campaign.tenant_id != user.tenant_id:
+            raise HTTPException(status_code=403, detail="Campaign belongs to another portal")
+    if user.role == UserRole.ADVERTISER and not user.is_tenant_admin and campaign.advertiser_id != user.id:
         raise HTTPException(status_code=403, detail="You cannot access this campaign")
     return campaign
 
@@ -154,14 +149,14 @@ def campaign_performance(campaign_id: int, user: User = Depends(authenticated_us
 
 
 @router.post("/api/v1/campaigns/{campaign_id}/performance/sync", response_model=CampaignPerformanceOut)
-def sync_campaign_performance(campaign_id: int, _: User = Depends(publisher_user), db: Session = Depends(get_db)):
-    campaign = db.get(Campaign, campaign_id)
-    if not campaign:
-        raise HTTPException(status_code=404, detail="Campaign not found")
-    token = setting(db, "meta.page_access_token")
-    version = setting(db, "meta.graph_api_version")
-    if not token or not version:
-        raise HTTPException(status_code=409, detail="Meta Page access token and Graph API version are required")
+def sync_campaign_performance(campaign_id: int, publisher: User = Depends(publisher_user), db: Session = Depends(get_db)):
+    campaign = campaign_for_user(db, campaign_id, publisher)
+    if not campaign.tenant_id:
+        raise HTTPException(status_code=409, detail="Campaign is not attached to a tenant")
+    token = tenant_setting(db, campaign.tenant_id, "meta.page_access_token")
+    version = tenant_setting(db, campaign.tenant_id, "meta.graph_api_version") or "v24.0"
+    if not token:
+        raise HTTPException(status_code=409, detail="This portal has no Meta Page access token configured")
     try:
         row = _sync_one(db, campaign, token, version)
     except MetaError as exc:
@@ -172,15 +167,27 @@ def sync_campaign_performance(campaign_id: int, _: User = Depends(publisher_user
 
 
 @router.post("/api/v1/admin/performance/sync", response_model=BulkSyncResult)
-def sync_all_performance(_: User = Depends(publisher_user), db: Session = Depends(get_db)):
-    token = setting(db, "meta.page_access_token")
-    version = setting(db, "meta.graph_api_version")
-    if not token or not version:
-        raise HTTPException(status_code=409, detail="Meta Page access token and Graph API version are required")
-    campaigns = list(db.scalars(select(Campaign).where(Campaign.status == CampaignStatus.PUBLISHED, Campaign.facebook_post_id.is_not(None)).order_by(Campaign.published_at.desc())))
+def sync_all_performance(publisher: User = Depends(publisher_user), db: Session = Depends(get_db)):
+    query = select(Campaign).where(
+        Campaign.status == CampaignStatus.PUBLISHED,
+        Campaign.facebook_post_id.is_not(None),
+    )
+    if publisher.role != UserRole.SUPER_ADMIN:
+        if not publisher.tenant_id:
+            raise HTTPException(status_code=403, detail="Publisher account is not attached to a portal")
+        query = query.where(Campaign.tenant_id == publisher.tenant_id)
+    campaigns = list(db.scalars(query.order_by(Campaign.published_at.desc())))
     synced = 0
     failures: list[str] = []
     for campaign in campaigns:
+        if not campaign.tenant_id:
+            failures.append(f"Campaign {campaign.id}: campaign is not attached to a tenant")
+            continue
+        token = tenant_setting(db, campaign.tenant_id, "meta.page_access_token")
+        version = tenant_setting(db, campaign.tenant_id, "meta.graph_api_version") or "v24.0"
+        if not token:
+            failures.append(f"Campaign {campaign.id}: portal Meta Page access token is not configured")
+            continue
         try:
             _sync_one(db, campaign, token, version)
             db.commit()
@@ -204,6 +211,13 @@ def advertiser_performance_summary(user: User = Depends(authenticated_user), db:
 def admin_performance_summary(user: User = Depends(authenticated_user), db: Session = Depends(get_db)):
     if user.role not in {UserRole.REVIEWER, UserRole.PUBLISHER, UserRole.SUPER_ADMIN}:
         raise HTTPException(status_code=403, detail="Meloli staff access required")
-    published_count = db.scalar(select(func.count(Campaign.id)).where(Campaign.status == CampaignStatus.PUBLISHED)) or 0
-    rows = list(db.scalars(select(CampaignPerformance)))
+    campaign_filter = [Campaign.status == CampaignStatus.PUBLISHED]
+    performance_query = select(CampaignPerformance).join(Campaign, Campaign.id == CampaignPerformance.campaign_id)
+    if user.role != UserRole.SUPER_ADMIN:
+        if not user.tenant_id:
+            raise HTTPException(status_code=403, detail="Staff account is not attached to a portal")
+        campaign_filter.append(Campaign.tenant_id == user.tenant_id)
+        performance_query = performance_query.where(Campaign.tenant_id == user.tenant_id)
+    published_count = db.scalar(select(func.count(Campaign.id)).where(*campaign_filter)) or 0
+    rows = list(db.scalars(performance_query))
     return _summary(rows, int(published_count))
