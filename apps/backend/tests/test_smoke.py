@@ -121,7 +121,7 @@ def test_advertising_workflow_smoke():
         corporate = client.put(
             f"/api/v1/admin/advertisers/{register.json()['user']['id']}/corporate",
             headers=auth(admin_token),
-            json={"credit_limit": 2000, "billing_cycle_day": 28, "active": True},
+            json={"credit_limit": 2000, "billing_cycle_day": 1, "active": True},
         )
         assert corporate.status_code == 200, corporate.text
         assert corporate.json()["credit_limit"] == 2000
@@ -162,6 +162,15 @@ def test_advertising_workflow_smoke():
         )
         assert approved.status_code == 200, approved.text
         assert approved.json()["status"] == "approved"
+
+        assert approved.json()["proof_status"] == "pending_advertiser"
+        proof = client.post(
+            f"/api/v1/campaigns/{campaign_id}/proof/decision",
+            headers=auth(advertiser_token),
+            json={"decision": "approved", "feedback": None},
+        )
+        assert proof.status_code == 200, proof.text
+        assert proof.json()["proof_status"] == "approved"
 
         receipt = client.get(f"/api/v1/payments/{payment_id}/receipt.pdf", headers=auth(advertiser_token))
         assert receipt.status_code == 200, receipt.text
@@ -232,6 +241,54 @@ def test_advertising_workflow_smoke():
         assert communications.status_code == 200, communications.text
         assert communications.json()["email_enabled"] is False
         assert communications.json()["webhook_enabled"] is False
+
+        corporate_campaign = client.post(
+            "/api/v1/campaigns",
+            headers=auth(advertiser_token),
+            json={"title": "Corporate credit advert", "caption": "Corporate billing test advert", "package_code": package_code},
+        )
+        assert corporate_campaign.status_code == 201, corporate_campaign.text
+        corporate_campaign_id = corporate_campaign.json()["id"]
+        corporate_payment = client.post(
+            f"/api/v1/campaigns/{corporate_campaign_id}/payments",
+            headers=auth(advertiser_token),
+            json={"method": "corporate_credit"},
+        )
+        assert corporate_payment.status_code == 201, corporate_payment.text
+        assert corporate_payment.json()["status"] == "paid"
+        corporate_payment_id = corporate_payment.json()["id"]
+
+        invoices = client.get("/api/v1/admin/corporate-invoices", headers=auth(admin_token))
+        assert invoices.status_code == 200, invoices.text
+        assert any(row["user_id"] == register.json()["user"]["id"] for row in invoices.json())
+
+        corp_cancel = client.post(
+            f"/api/v1/campaigns/{corporate_campaign_id}/cancel",
+            headers=auth(advertiser_token),
+            json={"reason": "Corporate advert cancelled for credit note test"},
+        )
+        assert corp_cancel.status_code == 200, corp_cancel.text
+        corp_refund_id = corp_cancel.json()["refund_request_id"]
+        assert corp_refund_id is not None
+
+        corp_refund = client.post(
+            f"/api/v1/admin/refunds/{corp_refund_id}/decision",
+            headers=auth(admin_token),
+            json={"status": "approved", "staff_note": "Approved for credit note test"},
+        )
+        assert corp_refund.status_code == 200, corp_refund.text
+
+        credit_notes = client.get("/api/v1/admin/credit-notes", headers=auth(admin_token))
+        assert credit_notes.status_code == 200, credit_notes.text
+        credit_note = next(row for row in credit_notes.json() if row["payment_id"] == corporate_payment_id)
+        assert credit_note["invoice_id"] is not None
+        assert credit_note["amount"] == corporate_payment.json()["amount"]
+        credit_pdf = client.get(
+            f"/api/v1/admin/credit-notes/{credit_note['id']}/pdf",
+            headers=auth(admin_token),
+        )
+        assert credit_pdf.status_code == 200, credit_pdf.text
+        assert credit_pdf.content.startswith(b"%PDF")
 
         two_factor_setup = client.post("/api/v1/profile/2fa/setup", headers=auth(admin_token))
         assert two_factor_setup.status_code == 200, two_factor_setup.text
