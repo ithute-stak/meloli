@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .models import AuthSession, AuditLog, Campaign, CampaignMedia, CampaignPerformanceSnapshot, CampaignStatus, SupportTicket, TicketStatus, User, UserRole
+from .models import AuthSession, AuditLog, Campaign, CampaignMedia, CampaignPerformanceSnapshot, CampaignReviewChecklist, CampaignStatus, SupportTicket, TicketStatus, User, UserRole
 from .security import validate_token_user, decrypt_secret, encrypt_secret, hash_password, verify_password
 import pyotp
 
@@ -33,6 +33,14 @@ class TwoFactorEnable(BaseModel):
 class TwoFactorDisable(BaseModel):
     password: str
     code: str = Field(min_length=6, max_length=8)
+
+
+class ReviewChecklistWrite(BaseModel):
+    content_accuracy_checked: bool = False
+    media_rights_checked: bool = False
+    contact_details_checked: bool = False
+    policy_checked: bool = False
+    notes: str | None = Field(default=None, max_length=3000)
 
 
 class TicketCreate(BaseModel):
@@ -144,6 +152,72 @@ def duplicate_campaign(campaign_id: int, user: User = Depends(current_user), db:
     db.commit()
     db.refresh(clone)
     return {"id": clone.id, "title": clone.title, "status": clone.status, "source_campaign_id": source.id}
+
+
+@router.get("/api/v1/campaigns/{campaign_id}/review-checklist")
+def get_review_checklist(campaign_id: int, _: User = Depends(staff_user), db: Session = Depends(get_db)):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    row = db.scalar(select(CampaignReviewChecklist).where(CampaignReviewChecklist.campaign_id == campaign_id))
+    if not row:
+        return {
+            "campaign_id": campaign_id,
+            "content_accuracy_checked": False,
+            "media_rights_checked": False,
+            "contact_details_checked": False,
+            "policy_checked": False,
+            "notes": None,
+            "completed": False,
+            "completed_at": None,
+            "completed_by_user_id": None,
+        }
+    completed = all([
+        row.content_accuracy_checked,
+        row.media_rights_checked,
+        row.contact_details_checked,
+        row.policy_checked,
+    ])
+    return {
+        "campaign_id": campaign_id,
+        "content_accuracy_checked": row.content_accuracy_checked,
+        "media_rights_checked": row.media_rights_checked,
+        "contact_details_checked": row.contact_details_checked,
+        "policy_checked": row.policy_checked,
+        "notes": row.notes,
+        "completed": completed,
+        "completed_at": row.completed_at,
+        "completed_by_user_id": row.completed_by_user_id,
+    }
+
+
+@router.put("/api/v1/campaigns/{campaign_id}/review-checklist")
+def save_review_checklist(campaign_id: int, payload: ReviewChecklistWrite, staff: User = Depends(staff_user), db: Session = Depends(get_db)):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.cancelled_at is not None:
+        raise HTTPException(status_code=409, detail="Cancelled campaigns cannot be reviewed")
+    row = db.scalar(select(CampaignReviewChecklist).where(CampaignReviewChecklist.campaign_id == campaign_id))
+    if not row:
+        row = CampaignReviewChecklist(campaign_id=campaign_id)
+        db.add(row)
+    row.content_accuracy_checked = payload.content_accuracy_checked
+    row.media_rights_checked = payload.media_rights_checked
+    row.contact_details_checked = payload.contact_details_checked
+    row.policy_checked = payload.policy_checked
+    row.notes = payload.notes.strip() if payload.notes else None
+    completed = all([
+        row.content_accuracy_checked,
+        row.media_rights_checked,
+        row.contact_details_checked,
+        row.policy_checked,
+    ])
+    row.completed_at = datetime.now(timezone.utc) if completed else None
+    row.completed_by_user_id = staff.id if completed else None
+    audit(db, staff, "campaign.review_checklist_updated", "campaign", campaign.id, "complete" if completed else "incomplete")
+    db.commit()
+    return get_review_checklist(campaign_id, staff, db)
 
 
 @router.post("/api/v1/support/tickets", response_model=TicketOut, status_code=201)
