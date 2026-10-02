@@ -109,8 +109,41 @@ class TenantSubscription(Base):
     current_period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     current_period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     trial_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reminder_stage: Mapped[str | None] = mapped_column(String(40), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class TenantSubscriptionInvoice(Base):
+    __tablename__ = "tenant_subscription_invoices"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    plan_id: Mapped[int] = mapped_column(ForeignKey("tenant_plans.id"), index=True)
+    invoice_number: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    billing_period: Mapped[str] = mapped_column(String(20))
+    amount: Mapped[float] = mapped_column(Numeric(12, 2))
+    currency: Mapped[str] = mapped_column(String(8), default="LSL")
+    status: Mapped[str] = mapped_column(String(30), default="issued", index=True)
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TenantSubscriptionPayment(Base):
+    __tablename__ = "tenant_subscription_payments"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    invoice_id: Mapped[int] = mapped_column(ForeignKey("tenant_subscription_invoices.id"), index=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    amount: Mapped[float] = mapped_column(Numeric(12, 2))
+    currency: Mapped[str] = mapped_column(String(8), default="LSL")
+    method: Mapped[str] = mapped_column(String(80), default="bank_transfer")
+    reference: Mapped[str | None] = mapped_column(String(160), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    verification_code: Mapped[str | None] = mapped_column(String(40), nullable=True, unique=True)
+    confirmed_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class User(Base):
@@ -179,6 +212,7 @@ class Campaign(Base):
     facebook_post_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     facebook_post_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    publishing_retry_exhausted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     advertiser: Mapped[User] = relationship(back_populates="campaigns", foreign_keys=[advertiser_id])
