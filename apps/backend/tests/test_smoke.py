@@ -161,6 +161,27 @@ def test_advertising_workflow_smoke():
         current = next(c for c in campaigns.json() if c["id"] == campaign_id)
         assert current["status"] == "submitted"
 
+        approval_without_checklist = client.patch(
+            f"/api/v1/campaigns/{campaign_id}/decision",
+            headers=auth(admin_token),
+            json={"status": "approved", "reviewer_note": "Approved for publication"},
+        )
+        assert approval_without_checklist.status_code == 409
+
+        checklist = client.put(
+            f"/api/v1/campaigns/{campaign_id}/review-checklist",
+            headers=auth(admin_token),
+            json={
+                "content_accuracy_checked": True,
+                "media_rights_checked": True,
+                "contact_details_checked": True,
+                "policy_checked": True,
+                "notes": "Smoke test moderation completed",
+            },
+        )
+        assert checklist.status_code == 200, checklist.text
+        assert checklist.json()["completed"] is True
+
         approved = client.patch(
             f"/api/v1/campaigns/{campaign_id}/decision",
             headers=auth(admin_token),
