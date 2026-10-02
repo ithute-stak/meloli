@@ -7,9 +7,11 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
+from .branding import LIGHT, MUTED, NAVY, RED, draw_footer, draw_header, info_label
 from .db import get_db
 from .models import AdvertiserSubscription, AuditLog, Campaign, CorporateAccount, Payment, PromoCode, SubscriptionPlan, User, UserRole
 from .security import decode_access_token
@@ -309,48 +311,81 @@ def corporate_statement_pdf(user_id: int, _: User = Depends(super_admin), db: Se
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
-    y = height - 55
-    pdf.setFont("Helvetica-Bold", 18)
-    pdf.drawString(50, y, "Meloli Airwaves")
-    y -= 24
-    pdf.setFont("Helvetica-Bold", 13)
-    pdf.drawString(50, y, "Corporate Advertising Statement")
-    y -= 24
-    pdf.setFont("Helvetica", 9)
-    pdf.drawString(50, y, f"Advertiser: {data['advertiser']['name']}")
-    y -= 14
-    pdf.drawString(50, y, f"Email: {data['advertiser']['email']}")
-    y -= 14
-    pdf.drawString(50, y, f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    y -= 26
-    account = data["account"]
+    document_no = f"STM-MEL-{user_id:06d}"
+    pdf.setTitle(f"Meloli corporate statement {document_no}")
+    draw_header(pdf, db, "Corporate statement", document_no, "ACCOUNT")
+
+    top = height - 154
+    pdf.setFillColor(LIGHT)
+    pdf.roundRect(46, top - 92, width - 92, 92, 14, fill=1, stroke=0)
+    info_label(pdf, 62, top - 22, "Advertiser", data["advertiser"]["name"])
+    info_label(pdf, 62, top - 58, "Email", data["advertiser"]["email"])
+    info_label(pdf, 305, top - 22, "Billing cycle", f"Day {data['account']['billing_cycle_day']}")
+    info_label(pdf, 305, top - 58, "Generated", datetime.now(timezone.utc).strftime("%d %b %Y"))
+
+    y = top - 126
+    metrics = [
+        ("CREDIT LIMIT", data["account"]["credit_limit"]),
+        ("USED", data["account"]["credit_used"]),
+        ("AVAILABLE", data["account"]["available_credit"]),
+    ]
+    box_w = (width - 92 - 20) / 3
+    for idx, (label, value) in enumerate(metrics):
+        x = 46 + idx * (box_w + 10)
+        pdf.setFillColor(NAVY if label != "USED" else RED)
+        pdf.roundRect(x, y - 58, box_w, 58, 12, fill=1, stroke=0)
+        pdf.setFillColor(colors.white)
+        pdf.setFont("Helvetica-Bold", 7.5)
+        pdf.drawString(x + 12, y - 18, label)
+        pdf.setFont("Helvetica-Bold", 14)
+        pdf.drawString(x + 12, y - 39, f"LSL {value:,.2f}")
+
+    y -= 92
+    pdf.setFillColor(NAVY)
     pdf.setFont("Helvetica-Bold", 10)
-    pdf.drawString(50, y, f"Credit limit: LSL {account['credit_limit']:,.2f}")
-    pdf.drawString(220, y, f"Used: LSL {account['credit_used']:,.2f}")
-    pdf.drawString(360, y, f"Available: LSL {account['available_credit']:,.2f}")
-    y -= 26
-    pdf.setFont("Helvetica-Bold", 9)
-    pdf.drawString(50, y, "Date")
-    pdf.drawString(130, y, "Campaign")
-    pdf.drawString(430, y, "Amount")
-    y -= 12
-    pdf.line(50, y, width - 50, y)
-    y -= 16
+    pdf.drawString(46, y, "CORPORATE CREDIT TRANSACTIONS")
+    y -= 18
+    pdf.setFillColor(NAVY)
+    pdf.roundRect(46, y - 24, width - 92, 24, 7, fill=1, stroke=0)
+    pdf.setFillColor(colors.white)
+    pdf.setFont("Helvetica-Bold", 8)
+    pdf.drawString(58, y - 16, "DATE")
+    pdf.drawString(130, y - 16, "CAMPAIGN")
+    pdf.drawRightString(width - 58, y - 16, "AMOUNT")
+    y -= 44
     pdf.setFont("Helvetica", 8)
     for tx in data["transactions"]:
-        if y < 70:
+        if y < 92:
+            draw_footer(pdf)
             pdf.showPage()
-            y = height - 55
-            pdf.setFont("Helvetica", 8)
+            draw_header(pdf, db, "Corporate statement", document_no, "ACCOUNT")
+            y = height - 160
         created = tx["created_at"]
-        created_text = created.strftime("%Y-%m-%d") if hasattr(created, "strftime") else str(created)[:10]
-        pdf.drawString(50, y, created_text)
+        created_text = created.strftime("%d %b %Y") if hasattr(created, "strftime") else str(created)[:10]
+        pdf.setFillColor(MUTED)
+        pdf.drawString(58, y, created_text)
+        pdf.setFillColor(NAVY)
         pdf.drawString(130, y, str(tx["campaign"])[:48])
-        pdf.drawRightString(width - 50, y, f"{tx['currency']} {tx['amount']:,.2f}")
-        y -= 15
-    y -= 10
-    pdf.setFont("Helvetica-Bold", 10)
-    pdf.drawRightString(width - 50, max(50, y), f"Outstanding balance: LSL {account['credit_used']:,.2f}")
+        pdf.setFont("Helvetica-Bold", 8)
+        pdf.drawRightString(width - 58, y, f"{tx['currency']} {tx['amount']:,.2f}")
+        pdf.setFont("Helvetica", 8)
+        pdf.setStrokeColor(colors.HexColor("#EEF0F5"))
+        pdf.line(46, y - 8, width - 46, y - 8)
+        y -= 20
+
+    pdf.setFillColor(colors.HexColor("#FFF1F4"))
+    pdf.roundRect(46, 78, width - 92, 54, 12, fill=1, stroke=0)
+    pdf.setFillColor(MUTED)
+    pdf.setFont("Helvetica-Bold", 8)
+    pdf.drawString(60, 111, "OUTSTANDING BALANCE")
+    pdf.setFillColor(RED)
+    pdf.setFont("Helvetica-Bold", 17)
+    pdf.drawString(60, 88, f"LSL {data['account']['credit_used']:,.2f}")
+    pdf.setFillColor(NAVY)
+    pdf.setFont("Helvetica", 8)
+    pdf.drawRightString(width - 60, 92, "Please quote the advertiser account when settling this balance.")
+
+    draw_footer(pdf)
     pdf.save()
     buffer.seek(0)
     return Response(
