@@ -424,3 +424,18 @@ class ReferralPayout(Base):
     reference: Mapped[str | None] = mapped_column(String(160), nullable=True)
     recorded_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CorporateApiClient(Base):
+    __tablename__ = "corporate_api_clients"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    corporate_account_id: Mapped[int] = mapped_column(ForeignKey("corporate_accounts.id"), index=True)
+    name: Mapped[str] = mapped_column(String(180))
+    key_prefix: Mapped[str] = mapped_column(String(16), index=True)
+    key_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    webhook_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    webhook_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
