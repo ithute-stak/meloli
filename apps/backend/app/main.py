@@ -133,14 +133,14 @@ def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bear
 
 
 def staff_user(user: User = Depends(current_user)) -> User:
-    if user.role not in {UserRole.REVIEWER, UserRole.PUBLISHER, UserRole.SUPER_ADMIN}:
-        raise HTTPException(status_code=403, detail="Meloli staff access required")
+    if not user.is_tenant_admin and user.role not in {UserRole.REVIEWER, UserRole.PUBLISHER, UserRole.SUPER_ADMIN}:
+        raise HTTPException(status_code=403, detail="Portal staff access required")
     return user
 
 
 def publisher_user(user: User = Depends(current_user)) -> User:
-    if user.role not in {UserRole.PUBLISHER, UserRole.SUPER_ADMIN}:
-        raise HTTPException(status_code=403, detail="Publisher or super admin access required")
+    if not user.is_tenant_admin and user.role not in {UserRole.PUBLISHER, UserRole.SUPER_ADMIN}:
+        raise HTTPException(status_code=403, detail="Publisher or portal admin access required")
     return user
 
 
@@ -390,9 +390,7 @@ def create_campaign(payload: CampaignCreate, user: User = Depends(current_user),
 
 @app.patch("/api/v1/campaigns/{campaign_id}/decision", response_model=CampaignOut)
 def decide_campaign(campaign_id: int, payload: CampaignDecision, staff: User = Depends(staff_user), db: Session = Depends(get_db)):
-    campaign = db.get(Campaign, campaign_id)
-    if not campaign:
-        raise HTTPException(status_code=404, detail="Campaign not found")
+    campaign = get_campaign_for_user(db, campaign_id, staff)
     if campaign.cancelled_at is not None:
         raise HTTPException(status_code=409, detail="Cancelled campaigns cannot enter editorial review")
     allowed = {CampaignStatus.IN_REVIEW, CampaignStatus.CHANGES_REQUESTED, CampaignStatus.APPROVED, CampaignStatus.SCHEDULED, CampaignStatus.REJECTED}
@@ -527,6 +525,9 @@ def decide_payment(payment_id: int, payload: PaymentDecision, staff: User = Depe
     if payload.reference is not None:
         payment.reference = payload.reference
     campaign = db.get(Campaign, payment.campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    get_campaign_for_user(db, campaign.id, staff)
     if payload.status == PaymentStatus.PAID:
         payment.paid_at = datetime.now(timezone.utc)
         if campaign and campaign.status == CampaignStatus.PAYMENT_PENDING:
@@ -633,28 +634,48 @@ def mark_notification_read(notification_id: int, user: User = Depends(current_us
 
 
 @app.get("/api/v1/admin/reports/summary", response_model=ReportSummary)
-def report_summary(_: User = Depends(staff_user), db: Session = Depends(get_db)):
-    advertisers = db.scalar(select(func.count(User.id)).where(User.role == UserRole.ADVERTISER)) or 0
-    campaigns = db.scalar(select(func.count(Campaign.id))) or 0
-    awaiting_review = db.scalar(select(func.count(Campaign.id)).where(Campaign.status.in_([CampaignStatus.SUBMITTED, CampaignStatus.IN_REVIEW]))) or 0
-    scheduled = db.scalar(select(func.count(Campaign.id)).where(Campaign.status == CampaignStatus.SCHEDULED)) or 0
-    published = db.scalar(select(func.count(Campaign.id)).where(Campaign.status == CampaignStatus.PUBLISHED)) or 0
-    paid_payments = db.scalar(select(func.count(Payment.id)).where(Payment.status == PaymentStatus.PAID)) or 0
-    revenue = db.scalar(select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.status == PaymentStatus.PAID)) or 0
-    failed_publications = db.scalar(select(func.count(PublicationAttempt.id)).where(PublicationAttempt.status == PublicationStatus.FAILED)) or 0
-    return ReportSummary(advertisers=advertisers, campaigns=campaigns, awaiting_review=awaiting_review, scheduled=scheduled, published=published, paid_payments=paid_payments, revenue=float(revenue), failed_publications=failed_publications)
+def report_summary(staff: User = Depends(staff_user), db: Session = Depends(get_db)):
+    tenant_id = staff.tenant_id if staff.is_tenant_admin else None
+    advertiser_query = select(func.count(User.id)).where(User.role == UserRole.ADVERTISER)
+    campaign_query = select(func.count(Campaign.id))
+    awaiting_query = select(func.count(Campaign.id)).where(Campaign.status.in_([CampaignStatus.SUBMITTED, CampaignStatus.IN_REVIEW]))
+    scheduled_query = select(func.count(Campaign.id)).where(Campaign.status == CampaignStatus.SCHEDULED)
+    published_query = select(func.count(Campaign.id)).where(Campaign.status == CampaignStatus.PUBLISHED)
+    payment_count_query = select(func.count(Payment.id)).join(Campaign, Campaign.id == Payment.campaign_id).where(Payment.status == PaymentStatus.PAID)
+    revenue_query = select(func.coalesce(func.sum(Payment.amount), 0)).join(Campaign, Campaign.id == Payment.campaign_id).where(Payment.status == PaymentStatus.PAID)
+    failed_query = select(func.count(PublicationAttempt.id)).join(Campaign, Campaign.id == PublicationAttempt.campaign_id).where(PublicationAttempt.status == PublicationStatus.FAILED)
+    if tenant_id:
+        advertiser_query = advertiser_query.where(User.tenant_id == tenant_id)
+        campaign_query = campaign_query.where(Campaign.tenant_id == tenant_id)
+        awaiting_query = awaiting_query.where(Campaign.tenant_id == tenant_id)
+        scheduled_query = scheduled_query.where(Campaign.tenant_id == tenant_id)
+        published_query = published_query.where(Campaign.tenant_id == tenant_id)
+        payment_count_query = payment_count_query.where(Campaign.tenant_id == tenant_id)
+        revenue_query = revenue_query.where(Campaign.tenant_id == tenant_id)
+        failed_query = failed_query.where(Campaign.tenant_id == tenant_id)
+    return ReportSummary(
+        advertisers=db.scalar(advertiser_query) or 0,
+        campaigns=db.scalar(campaign_query) or 0,
+        awaiting_review=db.scalar(awaiting_query) or 0,
+        scheduled=db.scalar(scheduled_query) or 0,
+        published=db.scalar(published_query) or 0,
+        paid_payments=db.scalar(payment_count_query) or 0,
+        revenue=float(db.scalar(revenue_query) or 0),
+        failed_publications=db.scalar(failed_query) or 0,
+    )
 
 
 @app.get("/api/v1/publications", response_model=list[PublicationOut])
-def list_publications(_: User = Depends(staff_user), db: Session = Depends(get_db)):
-    return list(db.scalars(select(PublicationAttempt).order_by(PublicationAttempt.created_at.desc()).limit(200)))
+def list_publications(staff: User = Depends(staff_user), db: Session = Depends(get_db)):
+    query = select(PublicationAttempt).join(Campaign, Campaign.id == PublicationAttempt.campaign_id).order_by(PublicationAttempt.created_at.desc()).limit(200)
+    if staff.is_tenant_admin and staff.tenant_id:
+        query = query.where(Campaign.tenant_id == staff.tenant_id)
+    return list(db.scalars(query))
 
 
 @app.post("/api/v1/campaigns/{campaign_id}/publish", response_model=PublishResult)
 def publish_campaign(campaign_id: int, publisher: User = Depends(publisher_user), db: Session = Depends(get_db)):
-    campaign = db.get(Campaign, campaign_id)
-    if not campaign:
-        raise HTTPException(status_code=404, detail="Campaign not found")
+    campaign = get_campaign_for_user(db, campaign_id, publisher)
     if campaign.cancelled_at is not None:
         raise HTTPException(status_code=409, detail="Cancelled campaigns cannot be published")
     if campaign.status not in {CampaignStatus.APPROVED, CampaignStatus.SCHEDULED}:
