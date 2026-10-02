@@ -18,6 +18,7 @@ from .db import get_db
 from .models import AuditLog, Campaign, CompetitionCertification, CompetitionComment, CompetitionReaction, User, UserRole
 from .security import validate_token_user
 from .tenancy import current_tenant_subscription, tenant_setting
+from .realtime import emit_realtime_event
 
 router = APIRouter()
 bearer = HTTPBearer(auto_error=False)
@@ -322,6 +323,13 @@ def sync_published_competitions(db: Session, min_age_minutes: int = 10, limit: i
             comments = _fetch_facebook_comments(campaign, db)
             _replace_results(db, campaign, comments)
             db.add(AuditLog(actor_user_id=None, action="competition.auto_synced", entity_type="campaign", entity_id=str(campaign.id), detail=f"{len(comments)} comments"))
+            if campaign.tenant_id:
+                result = _result_payload(db, campaign)
+                emit_realtime_event(
+                    db, "competition.results_updated", tenant_id=campaign.tenant_id, audience="tenant_all",
+                    entity_type="campaign", entity_id=campaign.id,
+                    payload={"campaign_id": campaign.id, "valid_likes": result["summary"]["valid_likes"], "invalid_likes": result["summary"]["invalid_likes"], "automatic": True},
+                )
             db.commit()
             synced += 1
         except Exception as exc:
@@ -349,6 +357,12 @@ def sync_competition(campaign_id: int, user: User = Depends(current_user), db: S
         ) from exc
     summary = _replace_results(db, campaign, comments)
     db.add(AuditLog(actor_user_id=user.id, action="competition.synced", entity_type="campaign", entity_id=str(campaign.id), detail=f"{summary['valid_likes']} valid likes"))
+    if campaign.tenant_id:
+        emit_realtime_event(
+            db, "competition.results_updated", tenant_id=campaign.tenant_id, audience="tenant_all",
+            entity_type="campaign", entity_id=campaign.id,
+            payload={"campaign_id": campaign.id, "valid_likes": summary["valid_likes"], "invalid_likes": summary["invalid_likes"]},
+        )
     db.commit()
     return _result_payload(db, campaign)
 
@@ -362,6 +376,13 @@ def import_competition(campaign_id: int, payload: CompetitionImport, user: User 
         raise HTTPException(status_code=403, detail="Portal staff access required")
     _replace_results(db, campaign, payload.comments)
     db.add(AuditLog(actor_user_id=user.id, action="competition.imported", entity_type="campaign", entity_id=str(campaign.id), detail=f"{len(payload.comments)} comments"))
+    if campaign.tenant_id:
+        result = _result_payload(db, campaign)
+        emit_realtime_event(
+            db, "competition.results_updated", tenant_id=campaign.tenant_id, audience="tenant_all",
+            entity_type="campaign", entity_id=campaign.id,
+            payload={"campaign_id": campaign.id, "valid_likes": result["summary"]["valid_likes"], "invalid_likes": result["summary"]["invalid_likes"]},
+        )
     db.commit()
     return _result_payload(db, campaign)
 
@@ -409,6 +430,11 @@ def certify_competition(campaign_id: int, user: User = Depends(current_user), db
         entity_id=str(campaign.id),
         detail=digest,
     ))
+    emit_realtime_event(
+        db, "competition.certified", tenant_id=campaign.tenant_id, audience="tenant_all",
+        entity_type="campaign", entity_id=campaign.id,
+        payload={"campaign_id": campaign.id, "snapshot_sha256": digest, "certified_at": certification.certified_at},
+    )
     db.commit()
     return {
         "id": certification.id,
