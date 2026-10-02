@@ -782,6 +782,16 @@ def list_notifications(user: User = Depends(current_user), db: Session = Depends
     return list(db.scalars(select(Notification).where(Notification.user_id == user.id).order_by(Notification.created_at.desc()).limit(100)))
 
 
+@app.post("/api/v1/notifications/read-all")
+def mark_all_notifications_read(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    rows = list(db.scalars(select(Notification).where(Notification.user_id == user.id, Notification.read_at.is_(None))))
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        row.read_at = now
+    db.commit()
+    return {"updated": len(rows)}
+
+
 @app.post("/api/v1/notifications/{notification_id}/read", response_model=NotificationOut)
 def mark_notification_read(notification_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     notification = db.get(Notification, notification_id)
