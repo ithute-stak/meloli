@@ -69,9 +69,10 @@ def upgrade() -> None:
 def downgrade() -> None:
     bind = op.get_bind()
     tables = set(sa.inspect(bind).get_table_names())
-    for name in ("competition_reactions", "competition_comments", "tenant_settings", "tenant_domains", "tenants"):
+    for name in ("competition_reactions", "competition_comments"):
         if name in tables:
             op.drop_table(name)
+
     campaign_cols = {c["name"] for c in sa.inspect(bind).get_columns("campaigns")}
     if "engagement_mode" in campaign_cols:
         op.drop_index("ix_campaigns_engagement_mode", table_name="campaigns")
@@ -79,13 +80,20 @@ def downgrade() -> None:
     if "tenant_id" in campaign_cols:
         op.drop_index("ix_campaigns_tenant_id", table_name="campaigns")
         op.drop_column("campaigns", "tenant_id")
+
     package_cols = {c["name"] for c in sa.inspect(bind).get_columns("advertising_packages")}
     if "tenant_id" in package_cols:
         op.drop_index("ix_advertising_packages_tenant_id", table_name="advertising_packages")
         op.drop_column("advertising_packages", "tenant_id")
+
     users_cols = {c["name"] for c in sa.inspect(bind).get_columns("users")}
     if "is_tenant_admin" in users_cols:
         op.drop_column("users", "is_tenant_admin")
     if "tenant_id" in users_cols:
         op.drop_index("ix_users_tenant_id", table_name="users")
         op.drop_column("users", "tenant_id")
+
+    tables = set(sa.inspect(bind).get_table_names())
+    for name in ("tenant_settings", "tenant_domains", "tenants"):
+        if name in tables:
+            op.drop_table(name)
