@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { BadgeCheck, BarChart3, Bell, CircleDollarSign, Copy, FileText, Headphones, Home, LogOut, Megaphone, Plus, Settings, TrendingUp, WalletCards } from "lucide-react";
 import { api, clearSession, getSessionUser, SessionUser } from "@/lib/api";
+import { useRealtimeTopics } from "@/app/components/RealtimeBridge";
 
 type Campaign={id:number;title:string;status:string;engagement_mode:string;preferred_publish_at?:string|null;facebook_post_url?:string|null;created_at:string;cancelled_at?:string|null;cancellation_reason?:string|null;proof_status:string;proof_feedback?:string|null};
 type Notification={id:number;read_at?:string|null};
@@ -19,17 +20,21 @@ export default function AdvertiserDashboard(){
   const [loading,setLoading]=useState(true);
   const [duplicating,setDuplicating]=useState<number|null>(null);
 
+  async function refreshAdvertiser(silent=false){
+    if(!silent)setLoading(true);
+    try{
+      const [c,n]=await Promise.all([api<Campaign[]>("/api/v1/campaigns",{},true),api<Notification[]>("/api/v1/notifications",{},true)]);
+      setCampaigns(c);setNotifications(n);
+      const rows=await Promise.all(c.map(item=>api<Payment[]>(`/api/v1/campaigns/${item.id}/payments`,{},true).catch(()=>[])));
+      setPayments(rows.flat());
+    }catch{}finally{if(!silent)setLoading(false)}
+  }
   useEffect(()=>{
     const current=getSessionUser();
     if(!current||current.role!=="advertiser"){router.replace("/login");return;}
-    setUser(current);
-    Promise.all([api<Campaign[]>("/api/v1/campaigns",{},true),api<Notification[]>("/api/v1/notifications",{},true)])
-      .then(async([c,n])=>{
-        setCampaigns(c);setNotifications(n);
-        const rows=await Promise.all(c.map(item=>api<Payment[]>(`/api/v1/campaigns/${item.id}/payments`,{},true).catch(()=>[])));
-        setPayments(rows.flat());
-      }).catch(()=>{}).finally(()=>setLoading(false));
+    setUser(current);refreshAdvertiser();
   },[router]);
+  useRealtimeTopics(["campaign","payment","notification","competition"],()=>{refreshAdvertiser(true)});
 
   const stats=useMemo(()=>{
     const inProgress=campaigns.filter(c=>["payment_pending","submitted","in_review","changes_requested"].includes(c.status)).length;
