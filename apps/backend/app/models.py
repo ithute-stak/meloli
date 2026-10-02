@@ -444,6 +444,17 @@ class CorporateCreditNote(Base):
     issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class CompetitionCertification(Base):
+    __tablename__ = "competition_certifications"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id"), unique=True, index=True)
+    snapshot_json: Mapped[str] = mapped_column(Text)
+    snapshot_sha256: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    certified_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    certified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class CampaignMedia(Base):
     __tablename__ = "campaign_media"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
