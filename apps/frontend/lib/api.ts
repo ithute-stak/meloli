@@ -2,6 +2,8 @@ export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000
 
 export type SessionUser = {
   id: number;
+  tenant_id?: number | null;
+  is_tenant_admin?: boolean;
   full_name: string;
   business_name?: string | null;
   email: string;
