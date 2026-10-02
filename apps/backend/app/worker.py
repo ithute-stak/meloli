@@ -1,19 +1,20 @@
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 
 from .automation import run_job_if_due
 from .communications import deliver_pending, enqueue_notification
 from .commercial import expire_subscriptions, generate_monthly_corporate_invoices, process_commercial_alerts
-from .competition import sync_published_competitions
+from .competition import close_due_competitions, sync_published_competitions
 from .db import SessionLocal
 from .meta_service import MetaError, publish_campaign as publish_to_meta
-from .models import AuditLog, Campaign, CampaignStatus, PublicationAttempt, PublicationStatus, SystemSetting, Tenant, User, UserRole
+from .models import AuditLog, Campaign, CampaignStatus, Payment, PaymentStatus, PublicationAttempt, PublicationStatus, SystemSetting, Tenant, User, UserRole
 from .realtime import cleanup_realtime_events, emit_realtime_event
 from .security import decrypt_secret
 from .tenant_billing import process_tenant_subscription_lifecycle
+from .meta_webhooks import process_meta_webhook_events
 
 
 def setting(db, key: str) -> str | None:
@@ -38,6 +39,77 @@ def notify_tenant_staff(db, campaign: Campaign, kind: str, title: str, message: 
     ))
     for user in staff:
         enqueue_notification(db, user.id, kind, title, message)
+
+
+def _reminder_sent_since(db, campaign_id: int, action: str, since: datetime) -> bool:
+    return bool(db.scalar(
+        select(func.count(AuditLog.id)).where(
+            AuditLog.entity_type == "campaign",
+            AuditLog.entity_id == str(campaign_id),
+            AuditLog.action == action,
+            AuditLog.created_at >= since,
+        )
+    ))
+
+
+def process_campaign_reminders(db) -> dict[str, int]:
+    now = datetime.now(timezone.utc)
+    sent = payment = review = proof = schedule = 0
+
+    campaigns = list(db.scalars(
+        select(Campaign)
+        .where(Campaign.cancelled_at.is_(None))
+        .order_by(Campaign.created_at)
+        .limit(500)
+    ))
+    for campaign in campaigns:
+        created = campaign.created_at.replace(tzinfo=timezone.utc) if campaign.created_at.tzinfo is None else campaign.created_at
+        updated = campaign.updated_at.replace(tzinfo=timezone.utc) if campaign.updated_at.tzinfo is None else campaign.updated_at
+        daily_cutoff = now - timedelta(hours=20)
+
+        if campaign.status == CampaignStatus.PAYMENT_PENDING and now - created >= timedelta(hours=int(os.getenv("PAYMENT_REMINDER_HOURS", "24"))):
+            if not _reminder_sent_since(db, campaign.id, "automation.payment_reminder", daily_cutoff):
+                enqueue_notification(
+                    db,
+                    campaign.advertiser_id,
+                    "payment_reminder",
+                    f"Payment needed for {campaign.title}",
+                    "Your campaign is waiting for payment confirmation. Complete or submit payment so editorial review can begin.",
+                )
+                db.add(AuditLog(actor_user_id=None, action="automation.payment_reminder", entity_type="campaign", entity_id=str(campaign.id)))
+                payment += 1; sent += 1
+
+        if campaign.status in {CampaignStatus.SUBMITTED, CampaignStatus.IN_REVIEW} and now - updated >= timedelta(hours=int(os.getenv("REVIEW_SLA_HOURS", "4"))):
+            if not _reminder_sent_since(db, campaign.id, "automation.review_sla_alert", daily_cutoff):
+                message = f"{campaign.title} has been waiting in editorial review beyond the configured SLA."
+                notify_tenant_staff(db, campaign, "review_sla", "Campaign review needs attention", message)
+                db.add(AuditLog(actor_user_id=None, action="automation.review_sla_alert", entity_type="campaign", entity_id=str(campaign.id), detail=message))
+                review += 1; sent += 1
+
+        if campaign.proof_status == "pending_advertiser" and campaign.proof_requested_at:
+            proof_requested = campaign.proof_requested_at.replace(tzinfo=timezone.utc) if campaign.proof_requested_at.tzinfo is None else campaign.proof_requested_at
+            if now - proof_requested >= timedelta(hours=int(os.getenv("PROOF_REMINDER_HOURS", "24"))) and not _reminder_sent_since(db, campaign.id, "automation.proof_reminder", daily_cutoff):
+                enqueue_notification(
+                    db,
+                    campaign.advertiser_id,
+                    "proof_reminder",
+                    f"Final proof waiting: {campaign.title}",
+                    "Your advert passed editorial review and is waiting for your final proof approval before it can be scheduled or published.",
+                )
+                db.add(AuditLog(actor_user_id=None, action="automation.proof_reminder", entity_type="campaign", entity_id=str(campaign.id)))
+                proof += 1; sent += 1
+
+        if campaign.status == CampaignStatus.SCHEDULED and campaign.scheduled_publish_at:
+            publish_at = campaign.scheduled_publish_at.replace(tzinfo=timezone.utc) if campaign.scheduled_publish_at.tzinfo is None else campaign.scheduled_publish_at
+            lead = timedelta(minutes=int(os.getenv("PUBLISHING_REMINDER_MINUTES", "60")))
+            if now <= publish_at <= now + lead and not _reminder_sent_since(db, campaign.id, "automation.publish_upcoming", publish_at - timedelta(hours=24)):
+                message = f"{campaign.title} is scheduled to publish at {publish_at.strftime('%d %b %Y %H:%M UTC')}."
+                notify_tenant_staff(db, campaign, "publishing_upcoming", "Scheduled publication approaching", message)
+                db.add(AuditLog(actor_user_id=None, action="automation.publish_upcoming", entity_type="campaign", entity_id=str(campaign.id), detail=message))
+                schedule += 1; sent += 1
+
+    db.commit()
+    return {"sent": sent, "payment": payment, "review_sla": review, "proof": proof, "publishing_upcoming": schedule}
 
 
 def process_scheduled_publishing(db) -> dict[str, int]:
@@ -171,6 +243,9 @@ def run_once() -> dict[str, object]:
     try:
         jobs = [
             ("notification_delivery", max(10, int(os.getenv("NOTIFICATION_DELIVERY_SECONDS", "30"))), lambda s: deliver_pending(s)),
+            ("meta_webhook_processing", max(10, int(os.getenv("META_WEBHOOK_PROCESS_SECONDS", "20"))), lambda s: process_meta_webhook_events(s, limit=max(1, int(os.getenv("META_WEBHOOK_BATCH_SIZE", "50"))))),
+            ("campaign_reminders", max(60, int(os.getenv("CAMPAIGN_REMINDER_CHECK_SECONDS", "300"))), process_campaign_reminders),
+            ("competition_closing", max(30, int(os.getenv("COMPETITION_CLOSE_CHECK_SECONDS", "60"))), lambda s: close_due_competitions(s, limit=max(1, int(os.getenv("COMPETITION_CLOSE_BATCH_SIZE", "20"))))),
             ("advertiser_subscription_expiry", max(300, int(os.getenv("ADVERTISER_SUBSCRIPTION_CHECK_SECONDS", "3600"))), lambda s: expire_subscriptions(s)),
             ("corporate_monthly_invoices", max(900, int(os.getenv("CORPORATE_INVOICE_CHECK_SECONDS", "21600"))), lambda s: generate_monthly_corporate_invoices(s)),
             ("commercial_alerts", max(300, int(os.getenv("COMMERCIAL_ALERT_CHECK_SECONDS", "3600"))), lambda s: process_commercial_alerts(s)),
