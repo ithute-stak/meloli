@@ -12,6 +12,7 @@ from .tenant_billing import process_tenant_subscription_lifecycle
 from .meta_service import MetaError, publish_campaign as publish_to_meta
 from .models import AuditLog, Campaign, CampaignStatus, PublicationAttempt, PublicationStatus, SystemSetting, Tenant, User, UserRole
 from .security import decrypt_secret
+from .realtime import cleanup_realtime_events, emit_realtime_event
 
 
 def setting(db, key: str) -> str | None:
@@ -47,6 +48,7 @@ def run_once() -> int:
         generate_monthly_corporate_invoices(db)
         process_commercial_alerts(db)
         process_tenant_subscription_lifecycle(db)
+        cleanup_realtime_events(db, retention_hours=max(1, int(os.getenv("REALTIME_EVENT_RETENTION_HOURS", "48"))))
         sync_published_competitions(db, min_age_minutes=max(1, int(os.getenv("COMPETITION_SYNC_MINUTES", "10"))), limit=max(1, int(os.getenv("COMPETITION_SYNC_BATCH_SIZE", "10"))))
         due = list(db.scalars(
             select(Campaign)
@@ -138,6 +140,12 @@ def run_once() -> int:
                 )
                 from .corporate_api import emit_corporate_webhook
                 emit_corporate_webhook(db, campaign, "campaign.published")
+                if campaign.tenant_id:
+                    emit_realtime_event(
+                        db, "campaign.published", tenant_id=campaign.tenant_id, audience="tenant_staff",
+                        entity_type="campaign", entity_id=campaign.id,
+                        payload={"campaign_id": campaign.id, "title": campaign.title, "facebook_post_url": result.post_url, "automatic": True},
+                    )
                 processed += 1
             except MetaError as exc:
                 attempt.status = PublicationStatus.FAILED
@@ -157,6 +165,12 @@ def run_once() -> int:
                     "Scheduled publishing failed",
                     message,
                 )
+                if campaign.tenant_id:
+                    emit_realtime_event(
+                        db, "campaign.publish_failed", tenant_id=campaign.tenant_id, audience="tenant_staff",
+                        entity_type="campaign", entity_id=campaign.id,
+                        payload={"campaign_id": campaign.id, "title": campaign.title, "attempt": int(previous) + 1, "max_attempts": max_attempts, "error": str(exc)[:500]},
+                    )
             db.commit()
         return processed
     finally:
