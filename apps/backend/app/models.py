@@ -266,3 +266,15 @@ class NotificationDelivery(Base):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class CorporateSettlement(Base):
+    __tablename__ = "corporate_settlements"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    corporate_account_id: Mapped[int] = mapped_column(ForeignKey("corporate_accounts.id"), index=True)
+    amount: Mapped[float] = mapped_column(Numeric(12, 2))
+    method: Mapped[str] = mapped_column(String(80), default="bank_transfer")
+    reference: Mapped[str | None] = mapped_column(String(160), nullable=True, index=True)
+    recorded_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    settled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
