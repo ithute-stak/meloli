@@ -65,11 +65,13 @@ def test_advertising_workflow_smoke():
         campaign = client.post(
             "/api/v1/campaigns",
             headers=auth(advertiser_token),
-            json={"title": "Test advert", "caption": "A test advert caption", "package_code": package_code},
+            json={"title": "Test advert", "caption": "A test advert caption", "package_code": package_code, "media_items": [{"url": "/media/test-one.jpg", "content_type": "image/jpeg"}, {"url": "/media/test-two.jpg", "content_type": "image/jpeg"}]},
         )
         assert campaign.status_code == 201, campaign.text
         campaign_id = campaign.json()["id"]
         assert campaign.json()["status"] == "payment_pending"
+        assert len(campaign.json()["media_items"]) == 2
+        assert campaign.json()["media_items"][0]["url"] == "/media/test-one.jpg"
 
         quote = client.get(f"/api/v1/campaigns/{campaign_id}/quotation.pdf", headers=auth(advertiser_token))
         assert quote.status_code == 200
@@ -79,6 +81,10 @@ def test_advertising_workflow_smoke():
         assert duplicate.status_code == 201, duplicate.text
         assert duplicate.json()["source_campaign_id"] == campaign_id
         duplicate_campaign_id = duplicate.json()["id"]
+        duplicated_rows = client.get("/api/v1/campaigns", headers=auth(advertiser_token))
+        assert duplicated_rows.status_code == 200
+        duplicated_campaign = next(row for row in duplicated_rows.json() if row["id"] == duplicate_campaign_id)
+        assert len(duplicated_campaign["media_items"]) == 2
 
         ticket = client.post(
             "/api/v1/support/tickets",
