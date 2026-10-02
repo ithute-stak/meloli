@@ -91,8 +91,8 @@ def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bear
 
 
 def staff_user(user: User = Depends(current_user)) -> User:
-    if user.role not in {UserRole.REVIEWER, UserRole.PUBLISHER, UserRole.SUPER_ADMIN}:
-        raise HTTPException(status_code=403, detail="Meloli staff access required")
+    if not user.is_tenant_admin and user.role not in {UserRole.REVIEWER, UserRole.PUBLISHER, UserRole.SUPER_ADMIN}:
+        raise HTTPException(status_code=403, detail="Portal staff access required")
     return user
 
 
@@ -131,13 +131,17 @@ def duplicate_campaign(campaign_id: int, user: User = Depends(current_user), db:
     source = db.get(Campaign, campaign_id)
     if not source:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    if user.role == UserRole.ADVERTISER and source.advertiser_id != user.id:
+    if user.tenant_id and source.tenant_id and source.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=403, detail="Campaign belongs to another portal")
+    if user.role == UserRole.ADVERTISER and not user.is_tenant_admin and source.advertiser_id != user.id:
         raise HTTPException(status_code=403, detail="You cannot duplicate this campaign")
-    advertiser_id = user.id if user.role == UserRole.ADVERTISER else source.advertiser_id
+    advertiser_id = user.id if user.role == UserRole.ADVERTISER and not user.is_tenant_admin else source.advertiser_id
     clone = Campaign(
+        tenant_id=source.tenant_id,
         advertiser_id=advertiser_id,
         package_id=source.package_id,
         title=f"{source.title} - Copy"[:160],
+        engagement_mode=source.engagement_mode,
         caption=source.caption,
         media_url=source.media_url,
         destination_url=source.destination_url,
@@ -155,10 +159,12 @@ def duplicate_campaign(campaign_id: int, user: User = Depends(current_user), db:
 
 
 @router.get("/api/v1/campaigns/{campaign_id}/review-checklist")
-def get_review_checklist(campaign_id: int, _: User = Depends(staff_user), db: Session = Depends(get_db)):
+def get_review_checklist(campaign_id: int, staff: User = Depends(staff_user), db: Session = Depends(get_db)):
     campaign = db.get(Campaign, campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    if staff.is_tenant_admin and staff.tenant_id != campaign.tenant_id:
+        raise HTTPException(status_code=403, detail="Campaign belongs to another portal")
     row = db.scalar(select(CampaignReviewChecklist).where(CampaignReviewChecklist.campaign_id == campaign_id))
     if not row:
         return {
@@ -196,6 +202,8 @@ def save_review_checklist(campaign_id: int, payload: ReviewChecklistWrite, staff
     campaign = db.get(Campaign, campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    if staff.is_tenant_admin and staff.tenant_id != campaign.tenant_id:
+        raise HTTPException(status_code=403, detail="Campaign belongs to another portal")
     if campaign.cancelled_at is not None:
         raise HTTPException(status_code=409, detail="Cancelled campaigns cannot be reviewed")
     row = db.scalar(select(CampaignReviewChecklist).where(CampaignReviewChecklist.campaign_id == campaign_id))
@@ -286,8 +294,8 @@ def advertiser_performance_history(user: User = Depends(current_user), db: Sessi
 
 @router.post("/api/v1/profile/2fa/setup")
 def setup_two_factor(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    if user.role == UserRole.ADVERTISER:
-        raise HTTPException(status_code=403, detail="Two-factor setup is currently required for Meloli staff accounts")
+    if user.role == UserRole.ADVERTISER and not user.is_tenant_admin:
+        raise HTTPException(status_code=403, detail="Two-factor setup is available to portal administrators and staff")
     secret = pyotp.random_base32()
     user.totp_secret = encrypt_secret(secret)
     user.two_factor_enabled = False
@@ -371,4 +379,4 @@ def logout_all_sessions(user: User = Depends(current_user), db: Session = Depend
 
 @router.get("/api/v1/profile/security")
 def security_status(user: User = Depends(current_user)):
-    return {"two_factor_enabled": bool(user.two_factor_enabled), "staff_two_factor_available": user.role != UserRole.ADVERTISER}
+    return {"two_factor_enabled": bool(user.two_factor_enabled), "staff_two_factor_available": user.role != UserRole.ADVERTISER or bool(user.is_tenant_admin)}
