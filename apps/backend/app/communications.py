@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from .db import get_db
 from .models import AuditLog, Notification, NotificationDelivery, SystemSetting, Tenant, TenantSetting, User, UserRole
 from .security import validate_token_user, decrypt_secret, encrypt_secret
+from .realtime import emit_realtime_event
 
 router = APIRouter()
 bearer = HTTPBearer(auto_error=False)
@@ -81,6 +82,17 @@ def enqueue_notification(db: Session, user_id: int, kind: str, title: str, messa
     notification = Notification(user_id=user_id, kind=kind, title=title, message=message)
     db.add(notification)
     db.flush()
+    recipient = db.get(User, user_id)
+    emit_realtime_event(
+        db,
+        "notification.created",
+        tenant_id=recipient.tenant_id if recipient else None,
+        user_id=user_id,
+        audience="user",
+        entity_type="notification",
+        entity_id=notification.id,
+        payload={"kind": kind, "title": title, "message": message},
+    )
     if bool_setting(db, "notifications.email_enabled"):
         db.add(NotificationDelivery(notification_id=notification.id, channel="email"))
     if bool_setting(db, "notifications.webhook_enabled"):
