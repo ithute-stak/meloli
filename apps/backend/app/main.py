@@ -52,6 +52,7 @@ from .schemas import (
     UserRegister,
 )
 from .security import create_access_token, decode_access_token, decrypt_secret, encrypt_secret, hash_password, verify_password
+import pyotp
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -221,6 +222,14 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is disabled")
+    if user.two_factor_enabled:
+        if not user.totp_secret:
+            raise HTTPException(status_code=409, detail="Two-factor authentication is misconfigured")
+        if not payload.otp_code:
+            raise HTTPException(status_code=401, detail="Two-factor authentication code required")
+        secret = decrypt_secret(user.totp_secret)
+        if not pyotp.TOTP(secret).verify(payload.otp_code, valid_window=1):
+            raise HTTPException(status_code=401, detail="Invalid two-factor authentication code")
     return AuthToken(access_token=create_access_token(user.id, user.role.value), user=user)
 
 
