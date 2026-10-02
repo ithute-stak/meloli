@@ -241,6 +241,27 @@ def test_advertising_workflow_smoke():
         smoke_job = next(row for row in automation_jobs.json() if row["job_key"] == "smoke_automation")
         assert smoke_job["last_status"] == "success"
         assert smoke_job["run_count"] == 1
+        assert smoke_job["stalled"] is False
+
+        queue_job = client.post(
+            "/api/v1/admin/automation/jobs/smoke_automation/run-now",
+            headers=auth(admin_token),
+        )
+        assert queue_job.status_code == 200, queue_job.text
+        assert queue_job.json()["status"] == "queued"
+        assert queue_job.json()["due"] is True
+
+        queued_jobs = client.get("/api/v1/admin/automation/jobs", headers=auth(admin_token))
+        assert queued_jobs.status_code == 200, queued_jobs.text
+        queued_smoke_job = next(row for row in queued_jobs.json() if row["job_key"] == "smoke_automation")
+        assert queued_smoke_job["last_status"] == "queued"
+        assert queued_smoke_job["due"] is True
+
+        missing_job = client.post(
+            "/api/v1/admin/automation/jobs/does-not-exist/run-now",
+            headers=auth(admin_token),
+        )
+        assert missing_job.status_code == 404
 
         campaigns = client.get("/api/v1/campaigns", headers=auth(admin_token))
         assert campaigns.status_code == 200
