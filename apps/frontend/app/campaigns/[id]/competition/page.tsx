@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { AlertTriangle, ArrowLeft, CheckCircle2, Download, FileCheck2, Loader2, RefreshCw, Trophy, Users, XCircle } from "lucide-react";
 import { API_URL, api, getSessionUser, getToken, SessionUser } from "@/lib/api";
+import { useRealtimeTopics } from "@/app/components/RealtimeBridge";
 
 type CommentRow={id:number;facebook_comment_id:string;message?:string|null;author_name?:string|null;raw_likes:number;valid_likes:number;invalid_likes:number;synced_at:string};
 type Disqualified={user_id:string;user_name?:string|null;comments_liked:number};
@@ -14,6 +15,7 @@ export default function CompetitionResultsPage(){
  const {id}=useParams<{id:string}>(); const router=useRouter(); const [user,setUser]=useState<SessionUser|null>(null); const [data,setData]=useState<Results|null>(null); const [loading,setLoading]=useState(true); const [syncing,setSyncing]=useState(false); const [certifying,setCertifying]=useState(false); const [downloading,setDownloading]=useState(false); const [error,setError]=useState(""); const [message,setMessage]=useState("");
  async function load(){setLoading(true);setError("");try{setData(await api<Results>("/api/v1/campaigns/"+id+"/competition/results",{},true));}catch(e){setError(e instanceof Error?e.message:"Unable to load competition results")}finally{setLoading(false)}}
  useEffect(()=>{const u=getSessionUser();if(!u){router.replace("/login");return;}setUser(u);load();},[id,router]);
+ useRealtimeTopics(["competition"],()=>{load()});
  const canSync=Boolean(user?.is_tenant_admin||user?.role==="reviewer"||user?.role==="publisher"||user?.role==="super_admin");
  async function sync(){setSyncing(true);setError("");setMessage("");try{const result=await api<Results>("/api/v1/campaigns/"+id+"/competition/sync",{method:"POST"},true);setData(result);setMessage("Facebook comment votes synced and duplicate voters recalculated.");}catch(e){setError(e instanceof Error?e.message:"Unable to sync Facebook votes")}finally{setSyncing(false)}}
  async function certify(){setCertifying(true);setError("");setMessage("");try{await api("/api/v1/campaigns/"+id+"/competition/certify",{method:"POST"},true);await load();setMessage("Results certified and frozen. The integrity fingerprint is now permanent.");}catch(e){setError(e instanceof Error?e.message:"Unable to certify competition results")}finally{setCertifying(false)}}
