@@ -46,6 +46,14 @@ def test_advertising_workflow_smoke():
         assert register.status_code == 201, register.text
         advertiser_token = register.json()["access_token"]
 
+        profile = client.patch(
+            "/api/v1/profile",
+            headers=auth(advertiser_token),
+            json={"full_name": "Advertiser Updated", "business_name": "Test Business", "phone": "+26651111111"},
+        )
+        assert profile.status_code == 200, profile.text
+        assert profile.json()["full_name"] == "Advertiser Updated"
+
         packages = client.get("/api/v1/packages")
         assert packages.status_code == 200
         assert len(packages.json()) >= 1
@@ -63,6 +71,18 @@ def test_advertising_workflow_smoke():
         quote = client.get(f"/api/v1/campaigns/{campaign_id}/quotation.pdf", headers=auth(advertiser_token))
         assert quote.status_code == 200
         assert quote.content.startswith(b"%PDF")
+
+        duplicate = client.post(f"/api/v1/campaigns/{campaign_id}/duplicate", headers=auth(advertiser_token))
+        assert duplicate.status_code == 201, duplicate.text
+        assert duplicate.json()["source_campaign_id"] == campaign_id
+
+        ticket = client.post(
+            "/api/v1/support/tickets",
+            headers=auth(advertiser_token),
+            json={"subject": "Please help", "message": "I need help with this campaign", "campaign_id": campaign_id},
+        )
+        assert ticket.status_code == 201, ticket.text
+        ticket_id = ticket.json()["id"]
 
         payment = client.post(
             f"/api/v1/campaigns/{campaign_id}/payments",
@@ -135,6 +155,14 @@ def test_advertising_workflow_smoke():
             json={"full_name": "Review User", "email": "reviewer@example.com", "password": "ReviewPassword123!", "role": "reviewer"},
         )
         assert staff.status_code == 201, staff.text
+
+        ticket_reply = client.patch(
+            f"/api/v1/support/tickets/{ticket_id}",
+            headers=auth(admin_token),
+            json={"status": "resolved", "staff_reply": "Your request has been resolved."},
+        )
+        assert ticket_reply.status_code == 200, ticket_reply.text
+        assert ticket_reply.json()["status"] == "resolved"
 
         audit = client.get("/api/v1/admin/audit", headers=auth(admin_token))
         assert audit.status_code == 200
