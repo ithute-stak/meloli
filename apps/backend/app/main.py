@@ -77,9 +77,26 @@ DEFAULT_PACKAGES = [
 def seed_data() -> None:
     db = SessionLocal()
     try:
+        default_tenant = db.scalar(select(Tenant).where(Tenant.slug == "meloli-airwaves"))
+        if default_tenant is None:
+            default_tenant = Tenant(
+                name="Meloli Airwaves",
+                slug="meloli-airwaves",
+                facebook_page_name="Meloli Airwaves",
+                accent_color="#e31545",
+                active=True,
+            )
+            db.add(default_tenant)
+            db.flush()
         for package_data in DEFAULT_PACKAGES:
-            if not db.scalar(select(AdvertisingPackage).where(AdvertisingPackage.code == package_data["code"])):
-                db.add(AdvertisingPackage(**package_data))
+            exists = db.scalar(
+                select(AdvertisingPackage).where(
+                    AdvertisingPackage.tenant_id == default_tenant.id,
+                    AdvertisingPackage.code == package_data["code"],
+                )
+            )
+            if not exists:
+                db.add(AdvertisingPackage(tenant_id=default_tenant.id, **package_data))
         admin_email = os.getenv("SUPER_ADMIN_EMAIL")
         admin_password = os.getenv("SUPER_ADMIN_PASSWORD")
         if admin_email and admin_password and not db.scalar(select(User).where(User.email == admin_email.lower())):
