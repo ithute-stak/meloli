@@ -387,6 +387,7 @@ def create_payment(campaign_id: int, payload: PaymentCreate, user: User = Depend
         currency=package.currency,
         method=method,
         reference=payload.reference or (payload.promo_code.strip().upper() if payload.promo_code else None),
+        promo_code_id=promo.id if promo else None,
         status=payment_status,
         paid_at=paid_at,
     )
