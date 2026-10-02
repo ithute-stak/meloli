@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.pytest_cache/
+apps/backend/tests/*.db
+apps/frontend/.next/
+apps/frontend/node_modules/
+apps/frontend/.pnpm-store/
+.DS_Store

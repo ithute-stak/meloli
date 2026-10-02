@@ -1,0 +1,139 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: meloli
+      POSTGRES_USER: meloli
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-meloli_dev}
+    volumes:
+      - meloli_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U meloli -d meloli"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./apps/backend
+    environment:
+      DATABASE_URL: postgresql+psycopg2://meloli:${POSTGRES_PASSWORD:-meloli_dev}@db:5432/meloli
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-meloli_dev}
+      JWT_SECRET: ${JWT_SECRET:-change-this-before-production}
+      SETTINGS_ENCRYPTION_KEY: ${SETTINGS_ENCRYPTION_KEY:-change-this-before-production-too}
+      SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:-}
+      SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD:-}
+      SUPER_ADMIN_NAME: ${SUPER_ADMIN_NAME:-Meloli Super Admin}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-*}
+      FRONTEND_PUBLIC_URL: ${FRONTEND_PUBLIC_URL:-http://localhost:3000}
+      PUBLIC_BACKEND_URL: ${PUBLIC_BACKEND_URL:-http://localhost:8000}
+      MEDIA_ROOT: /data/media
+      MAX_MEDIA_BYTES: ${MAX_MEDIA_BYTES:-26214400}
+      PUBLISHER_WORKER_ENABLED: "true"
+      BACKUP_ROOT: /data/backups
+      BACKUP_MAX_AGE_HOURS: ${BACKUP_MAX_AGE_HOURS:-30}
+    volumes:
+      - meloli_media:/data/media
+      - meloli_backups:/data/backups:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  publisher-worker:
+    build: ./apps/backend
+    command: ["sh", "-c", "alembic -c alembic.ini upgrade head && python -m app.worker"]
+    environment:
+      DATABASE_URL: postgresql+psycopg2://meloli:${POSTGRES_PASSWORD:-meloli_dev}@db:5432/meloli
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-meloli_dev}
+      SETTINGS_ENCRYPTION_KEY: ${SETTINGS_ENCRYPTION_KEY:-change-this-before-production-too}
+      PUBLIC_BACKEND_URL: ${PUBLIC_BACKEND_URL:-http://localhost:8000}
+      MEDIA_ROOT: /data/media
+      PUBLISHER_POLL_SECONDS: ${PUBLISHER_POLL_SECONDS:-60}
+      PUBLISHER_BATCH_SIZE: ${PUBLISHER_BATCH_SIZE:-20}
+      BACKUP_ROOT: /data/backups
+      BACKUP_MAX_AGE_HOURS: ${BACKUP_MAX_AGE_HOURS:-30}
+    volumes:
+      - meloli_media:/data/media
+      - meloli_backups:/data/backups:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  backup:
+    build: ./apps/backup
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: meloli
+      PGUSER: meloli
+      PGPASSWORD: ${POSTGRES_PASSWORD:-meloli_dev}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    volumes:
+      - meloli_backups:/backups
+      - meloli_media:/media:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  restore-db:
+    image: postgres:17-alpine
+    profiles: ["restore"]
+    environment:
+      POSTGRES_DB: meloli_restore
+      POSTGRES_USER: meloli_restore
+      POSTGRES_PASSWORD: restore_only
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U meloli_restore -d meloli_restore"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  restore-drill:
+    build: ./apps/backup
+    profiles: ["restore"]
+    entrypoint: ["/usr/local/bin/meloli-restore-drill"]
+    environment:
+      PGHOST: restore-db
+      PGPORT: 5432
+      PGDATABASE: meloli_restore
+      PGUSER: meloli_restore
+      PGPASSWORD: restore_only
+    volumes:
+      - meloli_backups:/backups:ro
+      - meloli_restore_media:/restore-media
+    depends_on:
+      restore-db:
+        condition: service_healthy
+
+  frontend:
+    build: ./apps/frontend
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  meloli_db:
+  meloli_media:
+  meloli_backups:
+  meloli_restore_media:

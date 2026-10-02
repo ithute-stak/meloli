@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+:root {
+  --fb-blue: #0866ff;
+  --fb-blue-hover: #075ce5;
+  --fb-blue-soft: #e7f3ff;
+  --fb-green: #42b72a;
+  --fb-bg: #f0f2f5;
+  --fb-card: #ffffff;
+  --fb-text: #1c1e21;
+  --fb-muted: #65676b;
+  --fb-border: #dddfe2;
+  --fb-hover: #f2f2f2;
+  --fb-danger: #e41e3f;
+  --navy: #1c2b4a;
+  --navy-2: #263b63;
+  --red: #e41e3f;
+  --ink: var(--fb-text);
+  --muted: var(--fb-muted);
+  --surface: var(--fb-bg);
+  --radius-card: 12px;
+  --radius-control: 8px;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, .10);
+  --shadow-popover: 0 12px 28px rgba(0, 0, 0, .18);
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--fb-bg);
+  color: var(--fb-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.4;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+button, input, textarea, select { font: inherit; }
+button, a { -webkit-tap-highlight-color: transparent; }
+button { touch-action: manipulation; }
+a { color: inherit; text-decoration: none; }
+input, textarea, select { color: var(--fb-text); }
+::placeholder { color: #8a8d91; opacity: 1; }
+:focus-visible { outline: 3px solid rgba(8, 102, 255, .28); outline-offset: 2px; }
+
+.meloli-grid {
+  background-image: linear-gradient(rgba(8,102,255,.025) 1px, transparent 1px), linear-gradient(90deg, rgba(8,102,255,.025) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.glass { background: rgba(255,255,255,.92); backdrop-filter: blur(18px); }
+.shadow-soft { box-shadow: var(--shadow-popover); }
+
+.fb-page { min-height: 100vh; background: var(--fb-bg); color: var(--fb-text); }
+.fb-card { border: 1px solid var(--fb-border); border-radius: var(--radius-card); background: var(--fb-card); box-shadow: var(--shadow-card); }
+.fb-control { border: 1px solid var(--fb-border); border-radius: var(--radius-control); background: #fff; transition: border-color .15s ease, box-shadow .15s ease, background .15s ease; }
+.fb-control:focus-within { border-color: var(--fb-blue); box-shadow: 0 0 0 2px rgba(8,102,255,.12); }
+.fb-primary { background: var(--fb-blue); color: #fff; border-radius: var(--radius-control); font-weight: 700; transition: background .15s ease, transform .08s ease; }
+.fb-primary:hover { background: var(--fb-blue-hover); }
+.fb-primary:active { transform: scale(.985); }
+.fb-secondary { background: #e4e6eb; color: #050505; border-radius: var(--radius-control); font-weight: 700; }
+.fb-secondary:hover { background: #d8dadf; }
+.fb-icon-button { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 999px; background: #e4e6eb; color: #050505; }
+.fb-icon-button:hover { background: #d8dadf; }
+.fb-avatar { display: grid; place-items: center; border-radius: 999px; background: var(--fb-blue); color: white; font-weight: 800; }
+.fb-muted { color: var(--fb-muted); }
+.fb-divider { border-color: var(--fb-border); }
+
+@media (max-width: 640px) {
+  body { font-size: 14px; }
+  .mobile-edge { margin-left: -1rem; margin-right: -1rem; border-left: 0; border-right: 0; border-radius: 0; }
+  .mobile-safe-bottom { padding-bottom: calc(5.25rem + env(safe-area-inset-bottom)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+}
