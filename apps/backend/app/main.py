@@ -27,6 +27,7 @@ from .models import (
     CorporateAccount,
     Campaign,
     CampaignMedia,
+    CampaignReviewChecklist,
     CampaignStatus,
     Notification,
     Payment,
@@ -360,6 +361,15 @@ def decide_campaign(campaign_id: int, payload: CampaignDecision, staff: User = D
         raise HTTPException(status_code=409, detail="Payment must be confirmed before editorial review")
     if payload.status == CampaignStatus.CHANGES_REQUESTED and not payload.reviewer_note:
         raise HTTPException(status_code=400, detail="A change request must include a reviewer note")
+    if payload.status == CampaignStatus.APPROVED:
+        checklist = db.scalar(select(CampaignReviewChecklist).where(CampaignReviewChecklist.campaign_id == campaign.id))
+        if not checklist or not all([
+            checklist.content_accuracy_checked,
+            checklist.media_rights_checked,
+            checklist.contact_details_checked,
+            checklist.policy_checked,
+        ]):
+            raise HTTPException(status_code=409, detail="Complete the moderation checklist before approving this campaign")
     campaign.status = payload.status
     campaign.reviewer_note = payload.reviewer_note
     if payload.status == CampaignStatus.APPROVED:
