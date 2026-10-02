@@ -64,6 +64,7 @@ def run_once() -> int:
                     message=campaign.caption,
                     media_url=campaign.media_url,
                     destination_url=campaign.destination_url,
+                    media_items=[(item.url, item.content_type) for item in campaign.media_items],
                 )
                 attempt.status = PublicationStatus.PUBLISHED
                 attempt.external_post_id = result.post_id
