@@ -596,8 +596,8 @@ def test_advertising_workflow_smoke():
 
         starter_domain = client.post(
             "/api/v1/tenant-admin/domains",
-            headers=auth(alpha_token),
-            json={"hostname": "ads.page-alpha.example"},
+            headers=auth(beta_token),
+            json={"hostname": "ads.page-beta.example"},
         )
         assert starter_domain.status_code == 403
         assert "does not include custom domains" in starter_domain.json()["detail"].lower()
