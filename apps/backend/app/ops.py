@@ -5,11 +5,13 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
+from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from .branding import BORDER, LIGHT, MUTED, NAVY, RED, draw_footer, draw_header, info_label
 from .db import get_db
 from .models import AdvertisingPackage, AuditLog, Campaign, CampaignStatus, Payment, PaymentStatus, PublicationAttempt, PublicationStatus, User, UserRole
 from .security import decode_access_token, hash_password
@@ -164,46 +166,92 @@ def system_health(_: User = Depends(staff), db: Session = Depends(get_db)):
     }
 
 
-def _commercial_pdf(title: str, campaign: Campaign, package: AdvertisingPackage, advertiser: User, document_no: str, paid: bool = False) -> bytes:
+def _commercial_pdf(title: str, campaign: Campaign, package: AdvertisingPackage, advertiser: User, document_no: str, paid: bool = False, db: Session | None = None) -> bytes:
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
     pdf.setTitle(f"{title} {document_no}")
-    pdf.setFont("Helvetica-Bold", 18)
-    pdf.drawString(48, height - 60, "MELOLI AIRWAVES MEDIA")
-    pdf.setFont("Helvetica", 10)
-    pdf.drawString(48, height - 78, title)
-    pdf.line(48, height - 92, width - 48, height - 92)
-    rows = [
-        ("Document no.", document_no),
-        ("Advertiser", advertiser.business_name or advertiser.full_name),
-        ("Email", advertiser.email),
-        ("Campaign", campaign.title),
-        ("Package", package.name),
-        ("Posts included", str(package.posts_included)),
-        ("Amount", f"{package.currency} {float(package.price):,.2f}"),
-        ("Status", "PAID" if paid else "PAYMENT PENDING"),
-        ("Generated", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")),
-    ]
-    y = height - 126
-    for label, value in rows:
-        pdf.setFont("Helvetica-Bold", 10)
-        pdf.drawString(48, y, label)
-        pdf.setFont("Helvetica", 10)
-        pdf.drawString(165, y, str(value)[:80])
-        y -= 23
-    y -= 10
+    status_text = "PAID" if paid else ("QUOTATION" if "quotation" in title.lower() else "PAYMENT DUE")
+    draw_header(pdf, db, title, document_no, status_text) if db is not None else None
+
+    top = height - 154
+    # Client and document summary cards.
+    pdf.setFillColor(LIGHT)
+    pdf.roundRect(46, top - 92, width - 92, 92, 14, fill=1, stroke=0)
+    info_label(pdf, 62, top - 22, "Bill to", advertiser.business_name or advertiser.full_name)
+    info_label(pdf, 62, top - 58, "Email", advertiser.email)
+    info_label(pdf, 305, top - 22, "Campaign", campaign.title, 42)
+    info_label(pdf, 305, top - 58, "Generated", datetime.now(timezone.utc).strftime("%d %b %Y"))
+
+    # Package / line-item table.
+    y = top - 122
+    pdf.setFillColor(NAVY)
+    pdf.roundRect(46, y - 24, width - 92, 24, 8, fill=1, stroke=0)
+    pdf.setFillColor(colors.white)
+    pdf.setFont("Helvetica-Bold", 8)
+    pdf.drawString(58, y - 16, "DESCRIPTION")
+    pdf.drawString(350, y - 16, "QTY")
+    pdf.drawRightString(width - 58, y - 16, "AMOUNT")
+
+    y -= 48
+    pdf.setFillColor(NAVY)
     pdf.setFont("Helvetica-Bold", 10)
-    pdf.drawString(48, y, "Campaign caption")
+    pdf.drawString(58, y, package.name)
+    pdf.setFillColor(MUTED)
+    pdf.setFont("Helvetica", 8.5)
+    description = (package.description or "Meloli Airwaves advertising placement").replace("\n", " ")
+    pdf.drawString(58, y - 15, description[:58])
+    pdf.setFillColor(NAVY)
+    pdf.setFont("Helvetica-Bold", 10)
+    pdf.drawCentredString(365, y, str(package.posts_included))
+    pdf.drawRightString(width - 58, y, f"{package.currency} {float(package.price):,.2f}")
+    pdf.setStrokeColor(BORDER)
+    pdf.line(46, y - 29, width - 46, y - 29)
+
+    # Totals block.
+    total_y = y - 67
+    pdf.setFillColor(MUTED)
     pdf.setFont("Helvetica", 9)
-    text_obj = pdf.beginText(48, y - 18)
-    text_obj.setLeading(13)
-    caption = campaign.caption.replace("\n", " ")
-    for i in range(0, min(len(caption), 900), 92):
-        text_obj.textLine(caption[i:i + 92])
+    pdf.drawRightString(width - 170, total_y, "Subtotal")
+    pdf.drawRightString(width - 58, total_y, f"{package.currency} {float(package.price):,.2f}")
+    pdf.setFillColor(NAVY)
+    pdf.setFont("Helvetica-Bold", 13)
+    pdf.drawRightString(width - 170, total_y - 28, "TOTAL")
+    pdf.setFillColor(RED)
+    pdf.drawRightString(width - 58, total_y - 28, f"{package.currency} {float(package.price):,.2f}")
+
+    # Campaign brief.
+    brief_y = total_y - 72
+    pdf.setFillColor(NAVY)
+    pdf.setFont("Helvetica-Bold", 10)
+    pdf.drawString(46, brief_y, "CAMPAIGN BRIEF")
+    pdf.setFillColor(MUTED)
+    pdf.setFont("Helvetica", 8.5)
+    text_obj = pdf.beginText(46, brief_y - 18)
+    text_obj.setLeading(12)
+    caption = (campaign.caption or "").replace("\n", " ")
+    for i in range(0, min(len(caption), 720), 88):
+        text_obj.textLine(caption[i:i + 88])
     pdf.drawText(text_obj)
+
+    # Payment / validity note.
+    note_y = 112
+    pdf.setFillColor(colors.HexColor("#FFF1F4"))
+    pdf.roundRect(46, note_y, width - 92, 48, 12, fill=1, stroke=0)
+    pdf.setFillColor(RED)
+    pdf.setFont("Helvetica-Bold", 8)
+    note_title = "PAYMENT CONFIRMED" if paid else ("QUOTATION VALIDITY" if "quotation" in title.lower() else "PAYMENT INFORMATION")
+    pdf.drawString(60, note_y + 31, note_title)
+    pdf.setFillColor(NAVY)
     pdf.setFont("Helvetica", 8)
-    pdf.drawString(48, 42, "Generated by the Meloli Airwaves Advertising Portal.")
+    note = "This document is marked paid in the Meloli portal." if paid else (
+        "This quotation is issued for the selected campaign package and may be used for payment approval."
+        if "quotation" in title.lower() else
+        "Please use the campaign reference when making payment. Publication proceeds after payment verification and editorial approval."
+    )
+    pdf.drawString(60, note_y + 16, note[:92])
+
+    draw_footer(pdf)
     pdf.save()
     return buffer.getvalue()
 
@@ -224,7 +272,7 @@ def _document_context(db: Session, campaign_id: int, user: User):
 @router.get("/api/v1/campaigns/{campaign_id}/quotation.pdf")
 def quotation(campaign_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     campaign, package, advertiser = _document_context(db, campaign_id, user)
-    data = _commercial_pdf("Advertising quotation", campaign, package, advertiser, f"Q-MEL-{campaign.id:06d}")
+    data = _commercial_pdf("Advertising quotation", campaign, package, advertiser, f"Q-MEL-{campaign.id:06d}", db=db)
     audit(db, user, "quotation.generated", "campaign", campaign.id)
     db.commit()
     return Response(data, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="meloli-quotation-{campaign.id}.pdf"'})
@@ -234,7 +282,7 @@ def quotation(campaign_id: int, user: User = Depends(current_user), db: Session 
 def invoice(campaign_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     campaign, package, advertiser = _document_context(db, campaign_id, user)
     paid = bool(db.scalar(select(func.count(Payment.id)).where(Payment.campaign_id == campaign.id, Payment.status == PaymentStatus.PAID)))
-    data = _commercial_pdf("Advertising invoice", campaign, package, advertiser, f"INV-MEL-{campaign.id:06d}", paid=paid)
+    data = _commercial_pdf("Advertising invoice", campaign, package, advertiser, f"INV-MEL-{campaign.id:06d}", paid=paid, db=db)
     audit(db, user, "invoice.generated", "campaign", campaign.id)
     db.commit()
     return Response(data, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="meloli-invoice-{campaign.id}.pdf"'})
