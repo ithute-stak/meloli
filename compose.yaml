@@ -85,3 +85,4 @@ services:
 volumes:
   meloli_db:
   meloli_media:
+  meloli_backups:
