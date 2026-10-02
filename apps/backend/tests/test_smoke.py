@@ -1,3 +1,6 @@
+import hashlib
+import hmac
+import json
 import os
 import shutil
 from datetime import datetime, timedelta, timezone
@@ -26,9 +29,11 @@ os.environ["FRONTEND_PUBLIC_URL"] = "http://localhost:3000"
 from fastapi.testclient import TestClient  # noqa: E402
 from app.asgi import app  # noqa: E402
 from app.db import SessionLocal  # noqa: E402
-from app.models import Tenant, TenantSubscription  # noqa: E402
+from app.models import Campaign, MetaWebhookEvent, Tenant, TenantSubscription  # noqa: E402
 from app.tenant_billing import process_tenant_subscription_lifecycle  # noqa: E402
 from app.automation import run_job_if_due  # noqa: E402
+from app import competition as competition_module  # noqa: E402
+from app.competition import ImportedComment, ImportedReaction, close_due_competitions  # noqa: E402
 
 
 def auth(token: str) -> dict[str, str]:
@@ -492,6 +497,63 @@ def test_advertising_workflow_smoke():
         assert alpha_subscription.json()["plan"]["custom_domains"] is True
         assert alpha_subscription.json()["plan"]["competition_certification"] is True
 
+        alpha_meta = client.put(
+            "/api/v1/tenant-admin/meta",
+            headers=auth(alpha_token),
+            json={
+                "app_id": "alpha-meta-app",
+                "app_secret": "alpha-meta-secret",
+                "page_id": "page-alpha-facebook-id",
+                "page_access_token": "alpha-page-token",
+                "webhook_verify_token": "alpha-webhook-verify",
+                "graph_api_version": "v24.0",
+            },
+        )
+        assert alpha_meta.status_code == 200, alpha_meta.text
+        assert alpha_meta.json()["webhook_verify_token_configured"] is True
+        assert alpha_meta.json()["webhook_callback_url"].endswith("/api/v1/meta/webhook")
+
+        verify_webhook = client.get(
+            "/api/v1/meta/webhook",
+            params={
+                "hub.mode": "subscribe",
+                "hub.verify_token": "alpha-webhook-verify",
+                "hub.challenge": "alpha-challenge",
+            },
+        )
+        assert verify_webhook.status_code == 200, verify_webhook.text
+        assert verify_webhook.text == "alpha-challenge"
+
+        webhook_payload = {
+            "object": "page",
+            "entry": [{
+                "id": "page-alpha-facebook-id",
+                "time": 1760000000,
+                "changes": [{"field": "feed", "value": {"item": "comment", "verb": "add", "post_id": "unknown-post"}}],
+            }],
+        }
+        webhook_body = json.dumps(webhook_payload, separators=(",", ":")).encode("utf-8")
+        signature = "sha256=" + hmac.new(b"alpha-meta-secret", webhook_body, hashlib.sha256).hexdigest()
+        received_webhook = client.post(
+            "/api/v1/meta/webhook",
+            content=webhook_body,
+            headers={"Content-Type": "application/json", "X-Hub-Signature-256": signature},
+        )
+        assert received_webhook.status_code == 200, received_webhook.text
+        assert received_webhook.json()["accepted"] == 1
+        duplicate_webhook = client.post(
+            "/api/v1/meta/webhook",
+            content=webhook_body,
+            headers={"Content-Type": "application/json", "X-Hub-Signature-256": signature},
+        )
+        assert duplicate_webhook.status_code == 200, duplicate_webhook.text
+        assert duplicate_webhook.json()["accepted"] == 0
+        db = SessionLocal()
+        try:
+            assert db.query(MetaWebhookEvent).filter(MetaWebhookEvent.tenant_id == tenant_a.json()["id"]).count() >= 1
+        finally:
+            db.close()
+
         alpha_campaign = client.post(
             "/api/v1/campaigns",
             headers=auth(alpha_token),
@@ -500,11 +562,15 @@ def test_advertising_workflow_smoke():
                 "caption": "Vote by liking one comment only",
                 "package_code": package_code,
                 "engagement_mode": "competition_one_comment",
+                "competition_closes_at": (datetime.now(timezone.utc) + timedelta(days=2)).isoformat(),
+                "competition_auto_certify": True,
             },
         )
         assert alpha_campaign.status_code == 201, alpha_campaign.text
         competition_id = alpha_campaign.json()["id"]
         assert alpha_campaign.json()["engagement_mode"] == "competition_one_comment"
+        assert alpha_campaign.json()["competition_closes_at"] is not None
+        assert alpha_campaign.json()["competition_auto_certify"] is True
 
         imported_votes = client.post(
             f"/api/v1/campaigns/{competition_id}/competition/import",
@@ -589,6 +655,57 @@ def test_advertising_workflow_smoke():
         entry_one = next(row for row in refreshed["comments"] if row["facebook_comment_id"] == "comment-1")
         assert entry_one["raw_likes"] == 2
         assert entry_one["valid_likes"] == 2
+
+        # A second due competition is closed automatically: final reactions
+        # are synchronized, frozen, and certified under the tenant owner.
+        auto_campaign = client.post(
+            "/api/v1/campaigns",
+            headers=auth(alpha_token),
+            json={
+                "title": "Automatic closing competition",
+                "caption": "Automatic close test",
+                "package_code": package_code,
+                "engagement_mode": "competition_one_comment",
+                "competition_closes_at": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+                "competition_auto_certify": True,
+            },
+        )
+        assert auto_campaign.status_code == 201, auto_campaign.text
+        auto_competition_id = auto_campaign.json()["id"]
+        db = SessionLocal()
+        original_fetch = competition_module._fetch_facebook_comments
+        try:
+            row = db.get(Campaign, auto_competition_id)
+            row.facebook_post_id = "auto-facebook-post"
+            row.status = "published"
+            db.commit()
+            competition_module._fetch_facebook_comments = lambda campaign, session: [
+                ImportedComment(
+                    comment_id="auto-comment-1",
+                    message="Automatic Entry",
+                    author_name="Automatic Contestant",
+                    reactions=[
+                        ImportedReaction(user_id="auto-voter-1", user_name="Auto Voter One"),
+                        ImportedReaction(user_id="auto-voter-2", user_name="Auto Voter Two"),
+                    ],
+                )
+            ]
+            auto_result = close_due_competitions(db)
+            assert auto_result["closed"] >= 1
+            assert auto_result["certified"] >= 1
+            db.expire_all()
+            row = db.get(Campaign, auto_competition_id)
+            assert row.competition_closed_at is not None
+        finally:
+            competition_module._fetch_facebook_comments = original_fetch
+            db.close()
+        auto_results = client.get(
+            f"/api/v1/campaigns/{auto_competition_id}/competition/results",
+            headers=auth(alpha_token),
+        )
+        assert auto_results.status_code == 200, auto_results.text
+        assert auto_results.json()["summary"]["valid_likes"] == 2
+        assert auto_results.json()["certification"]["frozen"] is True
 
         certified = client.post(
             f"/api/v1/campaigns/{competition_id}/competition/certify",
