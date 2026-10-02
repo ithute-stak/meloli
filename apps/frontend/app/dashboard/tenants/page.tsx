@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, CircleDollarSign, ExternalLink, Facebook, Globe2, Loader2, RefreshCw, ShieldCheck, Users } from "lucide-react";
+import { ArrowLeft, CircleDollarSign, ExternalLink, Globe2, Share2, Loader2, RefreshCw, ShieldCheck, Users } from "lucide-react";
 import { api, getSessionUser } from "@/lib/api";
 
 type Domain={id:number;hostname:string;status:string;verified_at?:string|null};
@@ -53,7 +53,7 @@ export default function TenantsPage(){
   {label:"Page tenants",value:String(summary?.tenants||0),hint:`${summary?.active_tenants||0} active`,icon:<Globe2/>},
   {label:"Subscription MRR",value:`${summary?.currency||"LSL"} ${Number(summary?.subscription_mrr||0).toLocaleString()}`,hint:"Active tenant subscriptions",icon:<CircleDollarSign/>},
   {label:"Active subscriptions",value:String(summary?.active_subscriptions||0),hint:`${summary?.trialing_subscriptions||0} currently trialing`,icon:<ShieldCheck/>},
-  {label:"Connected Meta Pages",value:String(summary?.connected_meta_pages||0),hint:`${summary?.verified_domains||0} verified custom domains`,icon:<Facebook/>},
+  {label:"Connected Meta Pages",value:String(summary?.connected_meta_pages||0),hint:`${summary?.verified_domains||0} verified custom domains`,icon:<Share2/>},
  ],[summary]);
 
  async function toggle(id:number,active:boolean){setBusy("tenant-"+id);setError("");setMessage("");try{await api("/api/v1/admin/tenants/"+id+"/state",{method:"PATCH",body:JSON.stringify({active:!active})},true);setMessage(active?"Portal disabled.":"Portal enabled.");await load();}catch(e){setError(e instanceof Error?e.message:"Unable to update portal")}finally{setBusy("")}}
