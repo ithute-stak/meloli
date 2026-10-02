@@ -12,6 +12,7 @@ from .tenancy import router as tenancy_router
 from .competition import router as competition_router
 from .tenant_billing import router as tenant_billing_router
 from .realtime import router as realtime_router
+from .automation import router as automation_router
 
 # Keep the established core application intact while composing newer feature
 # routers in one production entry point.
@@ -31,3 +32,4 @@ app.include_router(competition_router)
 app.include_router(tenant_billing_router)
 
 app.include_router(realtime_router)
+app.include_router(automation_router)
