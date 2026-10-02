@@ -55,13 +55,9 @@ def authenticated_user(credentials: HTTPAuthorizationCredentials | None = Depend
     if credentials is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
     try:
-        user_id = int(decode_access_token(credentials.credentials)["sub"])
+        return validate_token_user(credentials.credentials, db)
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token") from exc
-    user = db.get(User, user_id)
-    if not user or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account is unavailable")
-    return user
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid, expired or revoked session") from exc
 
 
 def publisher_user(user: User = Depends(authenticated_user)) -> User:
