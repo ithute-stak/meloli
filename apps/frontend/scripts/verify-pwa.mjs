@@ -8,6 +8,8 @@ const required = [
   "public/icons/meloli-pwa.svg",
   "public/icons/meloli-pwa-maskable.svg",
   "app/components/PwaRegistration.tsx",
+  "app/components/PwaInstallPrompt.tsx",
+  "app/offline/page.tsx",
 ];
 const missing = required.filter(path => !existsSync(join(root, path)));
 if (missing.length) {
@@ -22,6 +24,8 @@ for (const [label, ok] of [
   ["theme color", manifest.includes('theme_color: "#070a45"')],
   ["service-worker registration", layout.includes("<PwaRegistration")],
   ["offline shell cache", serviceWorker.includes('CACHE_NAME') && serviceWorker.includes('caches.open')],
+  ["offline fallback", serviceWorker.includes('/offline')],
+  ["install prompt", layout.includes("<PwaInstallPrompt")],
 ]) {
   if (!ok) {
     console.error("PWA verification failed:", label);
