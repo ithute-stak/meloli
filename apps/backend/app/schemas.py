@@ -96,6 +96,7 @@ class CampaignDecision(BaseModel):
 class PaymentCreate(BaseModel):
     method: str = Field(default="manual", min_length=2, max_length=80)
     reference: str | None = Field(default=None, max_length=160)
+    promo_code: str | None = Field(default=None, max_length=50)
 
 
 class PaymentOut(BaseModel):
