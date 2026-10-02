@@ -75,7 +75,14 @@ Key settings:
 - `BACKUP_RETENTION_DAYS` — default `14`
 - `BACKUP_MAX_AGE_HOURS` — default `30`; older backups are flagged as stale in Operations Control Centre
 
-A restore should be performed as an operator maintenance task, not from the web UI. Use a separate test database/volume first, restore the selected PostgreSQL dump with `pg_restore`, extract the matching media archive, run `alembic upgrade head`, and verify `/health`, campaign documents, media access and login before restoring production. Keep the original production volumes untouched until the drill has been validated.
+A restore should be performed as an operator maintenance task, not from the web UI. The repository includes an isolated restore profile that restores the latest database dump into a temporary PostgreSQL service and extracts the matching media archive into a separate restore-only volume. Run:
+
+```bash
+docker compose --profile restore run --rm restore-drill
+docker compose --profile restore down
+```
+
+The drill fails if the dump/archive is unreadable or if the restored database contains no public tables. It never mounts the production database volume or production media volume as a restore target. Keep production volumes untouched until a restore drill has passed.
 ## Growth, referrals and corporate API
 
 Super Admin can create referral partners in **Growth & Referrals**. Each partner receives a code and can share a registration link such as `/register?ref=AGENCY10`. Referred advertisers are permanently attributed to that partner, and commission reporting uses only currently confirmed paid transactions.
@@ -90,6 +97,19 @@ Corporate clients can:
 
 Webhook requests include the `X-Meloli-Signature: sha256=...` header. Corporate API campaign submission charges the advertiser’s approved corporate credit account immediately and will fail when available credit is insufficient.
 
+## Email and WhatsApp delivery
+
+Super Admin can configure and test SMTP delivery from **System Configuration**. SMTP passwords remain encrypted and are never returned to the browser.
+
+The same screen also supports direct **Meta WhatsApp Cloud API** delivery. Configure:
+
+- WhatsApp Phone Number ID
+- access token
+- Graph API version
+- approved WhatsApp template name
+- template language code
+
+The configured template should contain two body placeholders in this order: notification title, then notification message. Meloli sends business-initiated status updates as approved templates rather than unrestricted free-form WhatsApp messages. Advertiser phone numbers must include the international country code; Lesotho numbers should include `266`.
 ## Progressive Web App
 
 The frontend includes a web-app manifest, Meloli PWA icons and a service worker. Eligible browsers can install the portal as a standalone app. The service worker keeps a lightweight navigation shell available when the network is temporarily unavailable; transactional/API operations still require connectivity.
@@ -121,8 +141,9 @@ pnpm build
 ## Production checklist
 
 - Use strong independent `JWT_SECRET` and `SETTINGS_ENCRYPTION_KEY` values.
+- Set a strong production-only `POSTGRES_PASSWORD`; never deploy with the `meloli_dev` fallback.
 - Set `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` only through deployment secrets.
-- Set production `CORS_ORIGINS`, `NEXT_PUBLIC_API_URL` and `PUBLIC_BACKEND_URL`.
+- Set production `CORS_ORIGINS`, `ALLOWED_HOSTS`, `NEXT_PUBLIC_API_URL`, `FRONTEND_PUBLIC_URL` and `PUBLIC_BACKEND_URL`.
 - Put the frontend and backend behind HTTPS.
 - Configure backups for PostgreSQL and the media volume.
 - Configure and verify the production Meta app/Page integration from the dashboard.
