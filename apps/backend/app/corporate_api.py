@@ -31,6 +31,10 @@ class CorporateMedia(BaseModel):
     content_type: str = Field(min_length=3, max_length=120)
 
 
+class CorporateApiClientState(BaseModel):
+    active: bool
+
+
 class CorporateCampaignCreate(BaseModel):
     title: str = Field(min_length=3, max_length=160)
     caption: str = Field(min_length=3, max_length=5000)
@@ -125,6 +129,17 @@ def list_api_clients(_: User = Depends(super_admin), db: Session = Depends(get_d
             "created_at": row.created_at,
         })
     return result
+
+
+@router.patch("/api/v1/admin/corporate-api/clients/{client_id}/state")
+def set_api_client_state(client_id: int, payload: CorporateApiClientState, admin: User = Depends(super_admin), db: Session = Depends(get_db)):
+    row = db.get(CorporateApiClient, client_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Corporate API client not found")
+    row.active = payload.active
+    audit(db, admin, "corporate_api.client_enabled" if payload.active else "corporate_api.client_disabled", "corporate_api_client", row.id, row.name)
+    db.commit()
+    return {"id": row.id, "active": row.active}
 
 
 @router.post("/api/v1/corporate-api/campaigns", status_code=201)
