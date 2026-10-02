@@ -28,6 +28,7 @@ from app.asgi import app  # noqa: E402
 from app.db import SessionLocal  # noqa: E402
 from app.models import Tenant, TenantSubscription  # noqa: E402
 from app.tenant_billing import process_tenant_subscription_lifecycle  # noqa: E402
+from app.automation import run_job_if_due  # noqa: E402
 
 
 def auth(token: str) -> dict[str, str]:
@@ -197,13 +198,42 @@ def test_advertising_workflow_smoke():
         assert commercial.status_code == 200
         assert commercial.json()["subscription"]["remaining_posts"] == 4
 
-        paid = client.patch(
-            f"/api/v1/payments/{payment_id}",
-            headers=auth(admin_token),
-            json={"status": "paid", "reference": "TEST-001"},
-        )
-        assert paid.status_code == 200, paid.text
-        assert paid.json()["status"] == "paid"
+        realtime_ticket = client.post("/api/v1/realtime/ticket", headers=auth(advertiser_token))
+        assert realtime_ticket.status_code == 200, realtime_ticket.text
+        assert realtime_ticket.json()["expires_in"] == 300
+        with client.websocket_connect(
+            "/api/v1/realtime/ws?ticket=" + realtime_ticket.json()["ticket"] + "&after=0"
+        ) as websocket:
+            ready = websocket.receive_json()
+            assert ready["type"] == "ready"
+            paid = client.patch(
+                f"/api/v1/payments/{payment_id}",
+                headers=auth(admin_token),
+                json={"status": "paid", "reference": "TEST-001"},
+            )
+            assert paid.status_code == 200, paid.text
+            assert paid.json()["status"] == "paid"
+            realtime_message = None
+            for _ in range(30):
+                candidate = websocket.receive_json()
+                if candidate.get("type") == "event" and candidate.get("topic") == "notification.created":
+                    realtime_message = candidate
+                    break
+            assert realtime_message is not None
+            assert realtime_message["payload"]["kind"] == "payment"
+
+        db = SessionLocal()
+        try:
+            executed, job_result = run_job_if_due(db, "smoke_automation", 60, lambda _: {"ok": True})
+            assert executed is True
+            assert job_result == {"ok": True}
+        finally:
+            db.close()
+        automation_jobs = client.get("/api/v1/admin/automation/jobs", headers=auth(admin_token))
+        assert automation_jobs.status_code == 200, automation_jobs.text
+        smoke_job = next(row for row in automation_jobs.json() if row["job_key"] == "smoke_automation")
+        assert smoke_job["last_status"] == "success"
+        assert smoke_job["run_count"] == 1
 
         campaigns = client.get("/api/v1/campaigns", headers=auth(admin_token))
         assert campaigns.status_code == 200
