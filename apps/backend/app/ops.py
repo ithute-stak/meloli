@@ -239,6 +239,7 @@ def production_readiness(_: User = Depends(super_admin), db: Session = Depends(g
     encryption = os.getenv("SETTINGS_ENCRYPTION_KEY", "")
     super_password = os.getenv("SUPER_ADMIN_PASSWORD", "")
     cors = os.getenv("CORS_ORIGINS", "")
+    allowed_hosts = os.getenv("ALLOWED_HOSTS", "")
     public_backend = os.getenv("PUBLIC_BACKEND_URL", "")
     frontend_public = os.getenv("FRONTEND_PUBLIC_URL", "")
 
@@ -246,6 +247,7 @@ def production_readiness(_: User = Depends(super_admin), db: Session = Depends(g
     add("settings_key", "Settings encryption key", len(encryption) >= 32 and "change-this" not in encryption.lower(), "Use an independent random SETTINGS_ENCRYPTION_KEY of at least 32 characters.")
     add("super_admin_password", "Super Admin bootstrap password", len(super_password) >= 12 and "change" not in super_password.lower(), "Set a strong deployment secret; do not use a repository/default password.")
     add("cors", "Production CORS origins", bool(cors) and "*" not in cors and "localhost" not in cors, f"Configured origins: {cors or 'not set'}")
+    add("allowed_hosts", "Trusted host allowlist", bool(allowed_hosts) and "*" not in allowed_hosts and "localhost" not in allowed_hosts, f"Configured hosts: {allowed_hosts or 'not set'}")
     add("backend_https", "Public backend HTTPS", public_backend.startswith("https://"), public_backend or "PUBLIC_BACKEND_URL is not set")
     add("frontend_https", "Public frontend HTTPS", frontend_public.startswith("https://"), frontend_public or "FRONTEND_PUBLIC_URL is not set")
     add("meta", "Meta Page integration", setting("meta.connected") == "true", "Meta connection must pass Test connection in System Configuration.")
