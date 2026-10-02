@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from .communications import send_direct_email
 from .db import get_db
-from .models import AuthSession, AuditLog, Campaign, CampaignStatus, CorporateAccount, PasswordResetToken, Payment, PaymentStatus, RefundRequest, User, UserRole
+from .models import AdvertiserSubscription, AuthSession, AuditLog, Campaign, CampaignStatus, CorporateAccount, PasswordResetToken, Payment, PaymentStatus, RefundRequest, User, UserRole
 from .security import validate_token_user, hash_password
 
 router = APIRouter()
@@ -202,6 +202,14 @@ def decide_refund(refund_id: int, payload: RefundDecision, admin: User = Depends
             account = db.scalar(select(CorporateAccount).where(CorporateAccount.user_id == campaign.advertiser_id))
             if account:
                 account.credit_used = max(0, float(account.credit_used) - float(payment.amount))
+        elif payment.method == "subscription":
+            subscription = db.scalar(
+                select(AdvertiserSubscription)
+                .where(AdvertiserSubscription.user_id == campaign.advertiser_id)
+                .order_by(AdvertiserSubscription.period_end.desc())
+            )
+            if subscription:
+                subscription.remaining_posts += 1
         if campaign.status != CampaignStatus.PUBLISHED:
             campaign.status = CampaignStatus.PAYMENT_PENDING
         audit(db, admin, "refund.approved", "refund_request", row.id, f"Payment {payment.id}")
