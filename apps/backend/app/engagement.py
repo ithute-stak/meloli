@@ -8,7 +8,8 @@ from sqlalchemy.orm import Session
 
 from .db import get_db
 from .models import AuditLog, Campaign, CampaignPerformanceSnapshot, CampaignStatus, SupportTicket, TicketStatus, User, UserRole
-from .security import decode_access_token, hash_password, verify_password
+from .security import decode_access_token, decrypt_secret, encrypt_secret, hash_password, verify_password
+import pyotp
 
 router = APIRouter()
 bearer = HTTPBearer(auto_error=False)
@@ -23,6 +24,15 @@ class ProfileUpdate(BaseModel):
 class PasswordChange(BaseModel):
     current_password: str
     new_password: str = Field(min_length=10, max_length=128)
+
+
+class TwoFactorEnable(BaseModel):
+    code: str = Field(min_length=6, max_length=8)
+
+
+class TwoFactorDisable(BaseModel):
+    password: str
+    code: str = Field(min_length=6, max_length=8)
 
 
 class TicketCreate(BaseModel):
@@ -196,3 +206,51 @@ def advertiser_performance_history(user: User = Depends(current_user), db: Sessi
         .order_by(CampaignPerformanceSnapshot.captured_at.asc())
         .limit(1000)
     ))
+
+
+@router.post("/api/v1/profile/2fa/setup")
+def setup_two_factor(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if user.role == UserRole.ADVERTISER:
+        raise HTTPException(status_code=403, detail="Two-factor setup is currently required for Meloli staff accounts")
+    secret = pyotp.random_base32()
+    user.totp_secret = encrypt_secret(secret)
+    user.two_factor_enabled = False
+    audit(db, user, "two_factor.setup_started", "user", user.id)
+    db.commit()
+    issuer = "Meloli Airwaves"
+    uri = pyotp.TOTP(secret).provisioning_uri(name=user.email, issuer_name=issuer)
+    return {"secret": secret, "otpauth_uri": uri, "enabled": False}
+
+
+@router.post("/api/v1/profile/2fa/enable")
+def enable_two_factor(payload: TwoFactorEnable, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if not user.totp_secret:
+        raise HTTPException(status_code=409, detail="Start two-factor setup first")
+    secret = decrypt_secret(user.totp_secret)
+    if not pyotp.TOTP(secret).verify(payload.code, valid_window=1):
+        raise HTTPException(status_code=400, detail="Invalid authentication code")
+    user.two_factor_enabled = True
+    audit(db, user, "two_factor.enabled", "user", user.id)
+    db.commit()
+    return {"enabled": True}
+
+
+@router.post("/api/v1/profile/2fa/disable")
+def disable_two_factor(payload: TwoFactorDisable, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if not user.two_factor_enabled or not user.totp_secret:
+        return {"enabled": False}
+    if not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Password is incorrect")
+    secret = decrypt_secret(user.totp_secret)
+    if not pyotp.TOTP(secret).verify(payload.code, valid_window=1):
+        raise HTTPException(status_code=400, detail="Invalid authentication code")
+    user.two_factor_enabled = False
+    user.totp_secret = None
+    audit(db, user, "two_factor.disabled", "user", user.id)
+    db.commit()
+    return {"enabled": False}
+
+
+@router.get("/api/v1/profile/security")
+def security_status(user: User = Depends(current_user)):
+    return {"two_factor_enabled": bool(user.two_factor_enabled), "staff_two_factor_available": user.role != UserRole.ADVERTISER}
