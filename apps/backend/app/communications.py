@@ -203,3 +203,29 @@ def update_communications(payload: CommunicationsUpdate, _: User = Depends(super
 def delivery_status(_: User = Depends(super_admin), db: Session = Depends(get_db)):
     rows = list(db.scalars(select(NotificationDelivery).order_by(NotificationDelivery.created_at.desc()).limit(100)))
     return [{"id":r.id,"notification_id":r.notification_id,"channel":r.channel,"status":r.status,"attempts":r.attempts,"last_error":r.last_error,"sent_at":r.sent_at,"created_at":r.created_at} for r in rows]
+
+
+
+@router.post("/api/v1/admin/notification-deliveries/{delivery_id}/retry")
+def retry_delivery(delivery_id: int, _: User = Depends(super_admin), db: Session = Depends(get_db)):
+    row = db.get(NotificationDelivery, delivery_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Notification delivery not found")
+    row.status = "pending"
+    row.attempts = 0
+    row.last_error = None
+    row.sent_at = None
+    db.commit()
+    return {"id": row.id, "status": row.status, "attempts": row.attempts}
+
+
+@router.post("/api/v1/admin/notification-deliveries/retry-failed")
+def retry_failed_deliveries(_: User = Depends(super_admin), db: Session = Depends(get_db)):
+    rows = list(db.scalars(select(NotificationDelivery).where(NotificationDelivery.status == "failed")))
+    for row in rows:
+        row.status = "pending"
+        row.attempts = 0
+        row.last_error = None
+        row.sent_at = None
+    db.commit()
+    return {"reset": len(rows)}
