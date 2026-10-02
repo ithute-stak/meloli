@@ -243,6 +243,24 @@ def _activate_subscription(db: Session, invoice: TenantSubscriptionInvoice, paym
     return subscription
 
 
+@router.get("/api/v1/tenant-plans")
+def public_tenant_plans(db: Session = Depends(get_db)):
+    rows = list(db.scalars(select(TenantPlan).where(TenantPlan.active.is_(True)).order_by(TenantPlan.monthly_price, TenantPlan.id)))
+    return [{
+        "id": row.id,
+        "code": row.code,
+        "name": row.name,
+        "description": row.description,
+        "monthly_price": float(row.monthly_price),
+        "annual_price": float(row.annual_price),
+        "currency": row.currency,
+        "max_staff": row.max_staff,
+        "max_campaigns_monthly": row.max_campaigns_monthly,
+        "custom_domains": row.custom_domains,
+        "competition_certification": row.competition_certification,
+    } for row in rows]
+
+
 @router.get("/api/v1/tenant-admin/billing")
 def tenant_billing(admin: User = Depends(tenant_admin), db: Session = Depends(get_db)):
     invoices = list(db.scalars(select(TenantSubscriptionInvoice).where(TenantSubscriptionInvoice.tenant_id == admin.tenant_id).order_by(TenantSubscriptionInvoice.created_at.desc()).limit(100)))
