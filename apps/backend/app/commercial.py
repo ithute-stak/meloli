@@ -476,11 +476,34 @@ def generate_monthly_corporate_invoices(db: Session) -> int:
         )
         if existing:
             continue
+
+        previous_invoice = db.scalar(
+            select(CorporateInvoice)
+            .where(CorporateInvoice.corporate_account_id == account.id)
+            .order_by(CorporateInvoice.issued_at.desc())
+            .limit(1)
+        )
+        charges_query = (
+            select(Payment.amount)
+            .join(Campaign, Campaign.id == Payment.campaign_id)
+            .where(
+                Campaign.advertiser_id == account.user_id,
+                Payment.method == "corporate_credit",
+                Payment.status == PaymentStatus.PAID,
+            )
+        )
+        if previous_invoice and previous_invoice.issued_at:
+            charges_query = charges_query.where(Payment.created_at > previous_invoice.issued_at)
+        new_charges = sum((Decimal(str(value)) for value in db.scalars(charges_query)), Decimal("0.00"))
+        invoice_amount = min(new_charges, outstanding)
+        if invoice_amount <= 0:
+            continue
+
         invoice = CorporateInvoice(
             corporate_account_id=account.id,
             invoice_number=f"CORP-INV-MEL-{account.id:06d}-{now.strftime('%Y%m')}",
             period_key=period_key,
-            amount=outstanding,
+            amount=invoice_amount,
             amount_paid=0,
             currency="LSL",
             status="issued",
