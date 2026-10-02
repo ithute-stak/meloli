@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 import dns.resolver
 import httpx
@@ -7,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .communications import enqueue_notification
-from .models import Campaign, CampaignStatus, Payment, PaymentStatus, Tenant, TenantDomain, User
+from .models import Campaign, CampaignStatus, Payment, PaymentStatus, SystemSetting, Tenant, TenantDomain, User, UserRole
 from .realtime import emit_realtime_event
 from .tenancy import set_tenant_setting, tenant_setting
 
@@ -59,6 +60,68 @@ def _notify_health_transition(
         payload={"health_key": key, "status": current},
     )
     return True
+
+
+def _system_setting(db: Session, key: str) -> str | None:
+    row = db.scalar(select(SystemSetting).where(SystemSetting.key == key))
+    return row.value if row else None
+
+
+def _set_system_setting(db: Session, key: str, value: str | None) -> None:
+    row = db.scalar(select(SystemSetting).where(SystemSetting.key == key))
+    if row:
+        row.value = value
+        row.encrypted = False
+    else:
+        db.add(SystemSetting(key=key, value=value, encrypted=False))
+
+
+def check_backup_freshness(db: Session) -> dict[str, object]:
+    root = Path(os.getenv("BACKUP_ROOT", "/data/backups"))
+    marker = root / "last-success"
+    max_age_hours = max(1, int(os.getenv("BACKUP_MAX_AGE_HOURS", "30")))
+    healthy = False
+    detail = ""
+    age_hours: float | None = None
+    try:
+        raw = marker.read_text(encoding="utf-8").strip()
+        last_success = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if last_success.tzinfo is None:
+            last_success = last_success.replace(tzinfo=timezone.utc)
+        age_hours = (datetime.now(timezone.utc) - last_success.astimezone(timezone.utc)).total_seconds() / 3600
+        db_files = list(root.glob("db-*.dump"))
+        media_files = list(root.glob("media-*.tar.gz"))
+        healthy = age_hours <= max_age_hours and bool(db_files) and bool(media_files)
+        detail = f"Last successful backup {age_hours:.1f}h ago; {len(db_files)} database dumps and {len(media_files)} media archives present."
+    except Exception as exc:
+        detail = f"Backup marker unavailable or invalid: {str(exc)[:500]}"
+
+    previous = _system_setting(db, "health.backup.status")
+    current = "healthy" if healthy else "unhealthy"
+    _set_system_setting(db, "health.backup.status", current)
+    _set_system_setting(db, "health.backup.detail", detail)
+    _set_system_setting(db, "health.backup.checked_at", datetime.now(timezone.utc).isoformat())
+
+    if previous is not None and previous != current:
+        admins = list(db.scalars(select(User).where(User.role == UserRole.SUPER_ADMIN, User.is_active.is_(True)).order_by(User.id)))
+        for admin in admins:
+            enqueue_notification(
+                db,
+                admin.id,
+                "backup_health",
+                "Backup health restored" if healthy else "Backup health needs attention",
+                detail,
+            )
+        emit_realtime_event(
+            db,
+            "backup.health_changed",
+            audience="platform_admins",
+            entity_type="backup",
+            entity_id="primary",
+            payload={"status": current, "detail": detail, "age_hours": age_hours},
+        )
+    db.commit()
+    return {"healthy": healthy, "status": current, "detail": detail, "age_hours": age_hours}
 
 
 def check_meta_integrations(db: Session) -> dict[str, int]:
