@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .branding import LIGHT, MUTED, NAVY, draw_footer, draw_header
-from .communications import enqueue_notification
+from .communications import bool_setting, enqueue_notification, send_direct_email
 from .db import get_db
 from .models import (
     AuditLog,
@@ -198,6 +198,56 @@ def _render_receipt_pdf(db: Session, payment: TenantSubscriptionPayment) -> byte
     return buffer.getvalue()
 
 
+def _email_invoice_if_enabled(db: Session, invoice: TenantSubscriptionInvoice) -> None:
+    if not bool_setting(db, "notifications.email_enabled"):
+        return
+    owner = db.scalar(select(User).where(User.tenant_id == invoice.tenant_id, User.is_tenant_admin.is_(True), User.is_active.is_(True)).order_by(User.id))
+    if not owner or not owner.email:
+        return
+    try:
+        send_direct_email(
+            db,
+            owner.email,
+            f"Subscription invoice {invoice.invoice_number}",
+            f"Please find attached your platform subscription invoice {invoice.invoice_number}. Amount due: {invoice.currency} {float(invoice.amount):,.2f}. Due {invoice.due_at.strftime('%d %b %Y')}.",
+            attachment=_render_invoice_pdf(db, invoice),
+            attachment_name=f"{invoice.invoice_number}.pdf",
+            tenant_id=invoice.tenant_id,
+        )
+        db.add(AuditLog(actor_user_id=None, action="tenant.subscription_invoice_emailed", entity_type="tenant_subscription_invoice", entity_id=str(invoice.id), detail=owner.email))
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        db.add(AuditLog(actor_user_id=None, action="tenant.subscription_invoice_email_failed", entity_type="tenant_subscription_invoice", entity_id=str(invoice.id), detail=str(exc)[:1000]))
+        db.commit()
+
+
+def _email_receipt_if_enabled(db: Session, payment: TenantSubscriptionPayment) -> None:
+    if not bool_setting(db, "notifications.email_enabled"):
+        return
+    invoice = db.get(TenantSubscriptionInvoice, payment.invoice_id)
+    owner = db.scalar(select(User).where(User.tenant_id == payment.tenant_id, User.is_tenant_admin.is_(True), User.is_active.is_(True)).order_by(User.id))
+    if not invoice or not owner or not owner.email:
+        return
+    try:
+        receipt_no = f"TSR-{payment.id:06d}"
+        send_direct_email(
+            db,
+            owner.email,
+            f"Subscription receipt {receipt_no}",
+            f"Your platform subscription payment has been confirmed. Receipt {receipt_no} is attached. Verification code: {payment.verification_code or '—'}.",
+            attachment=_render_receipt_pdf(db, payment),
+            attachment_name=f"{receipt_no}.pdf",
+            tenant_id=payment.tenant_id,
+        )
+        db.add(AuditLog(actor_user_id=None, action="tenant.subscription_receipt_emailed", entity_type="tenant_subscription_payment", entity_id=str(payment.id), detail=owner.email))
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        db.add(AuditLog(actor_user_id=None, action="tenant.subscription_receipt_email_failed", entity_type="tenant_subscription_payment", entity_id=str(payment.id), detail=str(exc)[:1000]))
+        db.commit()
+
+
 def _activate_subscription(db: Session, invoice: TenantSubscriptionInvoice, payment: TenantSubscriptionPayment, admin: User) -> TenantSubscription:
     plan = db.get(TenantPlan, invoice.plan_id)
     tenant = db.get(Tenant, invoice.tenant_id)
@@ -311,6 +361,9 @@ def create_checkout(payload: TenantCheckoutCreate, admin: User = Depends(tenant_
     if amount <= 0:
         _activate_subscription(db, invoice, payment, admin)
         db.commit()
+    _email_invoice_if_enabled(db, invoice)
+    if payment.status == "paid":
+        _email_receipt_if_enabled(db, payment)
     return _invoice_payload(invoice, payment, plan)
 
 
@@ -367,6 +420,7 @@ def confirm_payment(payment_id: int, payload: TenantPaymentConfirm, admin: User 
         payload={"subscription_id": subscription.id, "tenant_id": payment.tenant_id, "plan_id": subscription.plan_id, "status": subscription.status},
     )
     db.commit()
+    _email_receipt_if_enabled(db, payment)
     return _invoice_payload(invoice, payment, db.get(TenantPlan, invoice.plan_id))
 
 
