@@ -146,6 +146,21 @@ class TenantSubscriptionPayment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class AutomationJobState(Base):
+    __tablename__ = "automation_job_states"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_key: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    interval_seconds: Mapped[int] = mapped_column(Integer, default=60)
+    last_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_status: Mapped[str] = mapped_column(String(30), default="never", index=True)
+    last_result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    run_count: Mapped[int] = mapped_column(Integer, default=0)
+    failure_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class RealtimeEvent(Base):
     __tablename__ = "realtime_events"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
