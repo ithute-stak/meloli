@@ -36,6 +36,11 @@ class CampaignCancel(BaseModel):
     reason: str = Field(min_length=5, max_length=2000)
 
 
+class ProofDecision(BaseModel):
+    decision: str = Field(pattern="^(approved|changes_requested)$")
+    feedback: str | None = Field(default=None, max_length=2000)
+
+
 class RefundDecision(BaseModel):
     status: str = Field(pattern="^(approved|rejected)$")
     staff_note: str | None = Field(default=None, max_length=2000)
@@ -107,6 +112,46 @@ def complete_password_reset(payload: ResetComplete, db: Session = Depends(get_db
     audit(db, user, "password_reset.completed", "user", user.id)
     db.commit()
     return {"message": "Password updated successfully. You can now sign in."}
+
+
+@router.post("/api/v1/campaigns/{campaign_id}/proof/decision")
+def decide_final_proof(campaign_id: int, payload: ProofDecision, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if user.role != UserRole.ADVERTISER:
+        raise HTTPException(status_code=403, detail="Advertiser account required")
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign or campaign.advertiser_id != user.id:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.cancelled_at is not None:
+        raise HTTPException(status_code=409, detail="Cancelled campaigns cannot approve a final proof")
+    if campaign.proof_status != "pending_advertiser":
+        raise HTTPException(status_code=409, detail="This campaign does not currently have a proof awaiting advertiser approval")
+    if payload.decision == "changes_requested" and not payload.feedback:
+        raise HTTPException(status_code=400, detail="Please explain the changes required")
+
+    now = datetime.now(timezone.utc)
+    campaign.proof_feedback = payload.feedback.strip() if payload.feedback else None
+    if payload.decision == "approved":
+        campaign.proof_status = "approved"
+        campaign.proof_approved_at = now
+        campaign.proof_approved_by_user_id = user.id
+        audit(db, user, "campaign.proof_approved", "campaign", campaign.id, campaign.proof_feedback)
+    else:
+        campaign.proof_status = "changes_requested"
+        campaign.proof_approved_at = None
+        campaign.proof_approved_by_user_id = None
+        campaign.status = CampaignStatus.CHANGES_REQUESTED
+        campaign.scheduled_publish_at = None
+        audit(db, user, "campaign.proof_changes_requested", "campaign", campaign.id, campaign.proof_feedback)
+
+    db.commit()
+    db.refresh(campaign)
+    return {
+        "id": campaign.id,
+        "status": campaign.status,
+        "proof_status": campaign.proof_status,
+        "proof_feedback": campaign.proof_feedback,
+        "proof_approved_at": campaign.proof_approved_at,
+    }
 
 
 @router.post("/api/v1/campaigns/{campaign_id}/cancel")
