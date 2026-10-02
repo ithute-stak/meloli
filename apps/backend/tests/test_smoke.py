@@ -394,6 +394,14 @@ def test_advertising_workflow_smoke():
         assert tenant_a.json()["slug"] == "page-alpha"
         assert "/p/page-alpha" in tenant_a.json()["generated_url"]
 
+        tenant_plans = client.get("/api/v1/admin/tenant-plans", headers=auth(admin_token))
+        assert tenant_plans.status_code == 200, tenant_plans.text
+        business_plan = next(row for row in tenant_plans.json() if row["code"] == "BUSINESS")
+        platform_summary = client.get("/api/v1/admin/platform/summary", headers=auth(admin_token))
+        assert platform_summary.status_code == 200, platform_summary.text
+        assert platform_summary.json()["tenants"] >= 2
+        assert platform_summary.json()["trialing_subscriptions"] >= 1
+
         tenant_b = client.post(
             "/api/v1/tenants/register",
             json={
@@ -544,6 +552,23 @@ def test_advertising_workflow_smoke():
         )
         assert cross_tenant_results.status_code == 403
 
+        starter_domain = client.post(
+            "/api/v1/tenant-admin/domains",
+            headers=auth(alpha_token),
+            json={"hostname": "ads.page-alpha.example"},
+        )
+        assert starter_domain.status_code == 403
+        assert "does not include custom domains" in starter_domain.json()["detail"].lower()
+
+        alpha_subscription = client.put(
+            f"/api/v1/admin/tenants/{tenant_a.json()['id']}/subscription",
+            headers=auth(admin_token),
+            json={"plan_id": business_plan["id"], "billing_period": "monthly", "status": "active"},
+        )
+        assert alpha_subscription.status_code == 200, alpha_subscription.text
+        assert alpha_subscription.json()["plan"]["code"] == "BUSINESS"
+        assert alpha_subscription.json()["plan"]["custom_domains"] is True
+
         domain_request = client.post(
             "/api/v1/tenant-admin/domains",
             headers=auth(alpha_token),
@@ -552,6 +577,23 @@ def test_advertising_workflow_smoke():
         assert domain_request.status_code == 201, domain_request.text
         assert domain_request.json()["status"] == "pending"
         assert domain_request.json()["verification_token"].startswith("meloli-")
+
+        staff_member = client.post(
+            "/api/v1/tenant-admin/staff",
+            headers=auth(alpha_token),
+            json={
+                "full_name": "Alpha Reviewer",
+                "email": "alpha.reviewer@example.com",
+                "password": "AlphaReviewerPassword123!",
+                "role": "reviewer",
+            },
+        )
+        assert staff_member.status_code == 201, staff_member.text
+        assert staff_member.json()["role"] == "reviewer"
+        onboarding = client.get("/api/v1/tenant-admin/onboarding", headers=auth(alpha_token))
+        assert onboarding.status_code == 200, onboarding.text
+        assert onboarding.json()["subscription"]["plan"]["code"] == "BUSINESS"
+        assert onboarding.json()["percent"] >= 50
 
         two_factor_setup = client.post("/api/v1/profile/2fa/setup", headers=auth(admin_token))
         assert two_factor_setup.status_code == 200, two_factor_setup.text
