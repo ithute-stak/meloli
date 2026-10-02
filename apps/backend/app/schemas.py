@@ -46,6 +46,9 @@ class PackageOut(BaseModel):
     price: float
     currency: str
     posts_included: int
+    max_media_items: int
+    allow_video: bool
+    allow_carousel: bool
     active: bool
 
 
@@ -56,6 +59,9 @@ class PackageWrite(BaseModel):
     price: float = Field(gt=0)
     currency: str = Field(default="LSL", min_length=3, max_length=8)
     posts_included: int = Field(default=1, ge=1, le=100)
+    max_media_items: int = Field(default=10, ge=1, le=10)
+    allow_video: bool = True
+    allow_carousel: bool = True
     active: bool = True
 
 
