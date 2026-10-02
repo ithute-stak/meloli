@@ -11,6 +11,7 @@ class UserRegister(BaseModel):
     email: EmailStr
     phone: str | None = Field(default=None, max_length=40)
     password: str = Field(min_length=8, max_length=128)
+    referral_code: str | None = Field(default=None, max_length=50)
 
 
 class UserLogin(BaseModel):
