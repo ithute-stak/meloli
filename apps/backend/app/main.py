@@ -2,7 +2,7 @@ import io
 import os
 import secrets
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,6 +39,8 @@ from .models import (
     ReferralPartner,
     SystemSetting,
     Tenant,
+    TenantPlan,
+    TenantSubscription,
     User,
     UserRole,
 )
@@ -97,6 +99,60 @@ def seed_data() -> None:
             )
             if not exists:
                 db.add(AdvertisingPackage(tenant_id=default_tenant.id, **package_data))
+
+        tenant_plan_defaults = [
+            {
+                "code": "STARTER",
+                "name": "Starter",
+                "description": "For smaller Facebook Pages starting to manage advertising clients.",
+                "monthly_price": 299,
+                "annual_price": 2990,
+                "max_staff": 2,
+                "max_campaigns_monthly": 50,
+                "custom_domains": False,
+                "competition_certification": False,
+            },
+            {
+                "code": "BUSINESS",
+                "name": "Business",
+                "description": "For established Pages running regular campaigns, competitions and branded portals.",
+                "monthly_price": 699,
+                "annual_price": 6990,
+                "max_staff": 8,
+                "max_campaigns_monthly": 300,
+                "custom_domains": True,
+                "competition_certification": True,
+            },
+            {
+                "code": "ENTERPRISE",
+                "name": "Enterprise",
+                "description": "Higher-capacity Page operations with larger teams and campaign volumes.",
+                "monthly_price": 1499,
+                "annual_price": 14990,
+                "max_staff": 30,
+                "max_campaigns_monthly": 2000,
+                "custom_domains": True,
+                "competition_certification": True,
+            },
+        ]
+        for plan_data in tenant_plan_defaults:
+            if not db.scalar(select(TenantPlan).where(TenantPlan.code == plan_data["code"])):
+                db.add(TenantPlan(currency="LSL", active=True, **plan_data))
+        db.flush()
+        if not db.scalar(select(TenantSubscription).where(TenantSubscription.tenant_id == default_tenant.id)):
+            business_plan = db.scalar(select(TenantPlan).where(TenantPlan.code == "BUSINESS"))
+            if business_plan:
+                now = datetime.now(timezone.utc)
+                db.add(TenantSubscription(
+                    tenant_id=default_tenant.id,
+                    plan_id=business_plan.id,
+                    status="active",
+                    billing_period="monthly",
+                    price_amount=business_plan.monthly_price,
+                    currency=business_plan.currency,
+                    current_period_start=now,
+                    current_period_end=now + timedelta(days=31),
+                ))
         admin_email = os.getenv("SUPER_ADMIN_EMAIL")
         admin_password = os.getenv("SUPER_ADMIN_PASSWORD")
         if admin_email and admin_password and not db.scalar(select(User).where(User.email == admin_email.lower())):
