@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .models import AuditLog, Notification, NotificationDelivery, SystemSetting, Tenant, User, UserRole
+from .models import AuditLog, Notification, NotificationDelivery, SystemSetting, Tenant, TenantSetting, User, UserRole
 from .security import validate_token_user, decrypt_secret, encrypt_secret
 
 router = APIRouter()
@@ -102,8 +102,13 @@ def _send_email(db: Session, notification: Notification, user: User) -> None:
     msg = EmailMessage()
     tenant = db.get(Tenant, user.tenant_id) if user.tenant_id else None
     portal_name = tenant.name if tenant else "Advertising Portal"
+    sender_name = portal_name
+    if tenant:
+        row = db.scalar(select(TenantSetting).where(TenantSetting.tenant_id == tenant.id, TenantSetting.key == "branding.email_sender_name").order_by(TenantSetting.id.desc()))
+        if row and row.value:
+            sender_name = row.value
     msg["Subject"] = notification.title
-    msg["From"] = from_email
+    msg["From"] = f"{sender_name} <{from_email}>"
     msg["To"] = user.email
     msg.set_content(notification.message + f"\n\n{portal_name} Advertising Portal")
     with smtplib.SMTP(host, port, timeout=20) as smtp:
