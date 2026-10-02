@@ -20,6 +20,7 @@ os.environ["SETTINGS_ENCRYPTION_KEY"] = "test-settings-secret"
 os.environ["SUPER_ADMIN_EMAIL"] = "admin@example.com"
 os.environ["SUPER_ADMIN_PASSWORD"] = "StrongTestPassword123!"
 os.environ["SUPER_ADMIN_NAME"] = "Test Admin"
+os.environ["FRONTEND_PUBLIC_URL"] = "http://localhost:3000"
 
 from fastapi.testclient import TestClient  # noqa: E402
 from app.asgi import app  # noqa: E402
@@ -251,3 +252,44 @@ def test_advertising_workflow_smoke():
             json={"email": "admin@example.com", "password": "StrongTestPassword123!", "otp_code": pyotp.TOTP(otp_secret).now()},
         )
         assert admin_login_with_otp.status_code == 200, admin_login_with_otp.text
+
+        # Account recovery never reveals whether an email exists.
+        recovery = client.post(
+            "/api/v1/auth/password-reset/request",
+            json={"email": "advertiser@example.com"},
+        )
+        assert recovery.status_code == 200
+        assert "password reset instructions" in recovery.json()["message"].lower()
+
+        # Session records are visible and can be revoked individually.
+        sessions = client.get("/api/v1/profile/sessions", headers=auth(advertiser_token))
+        assert sessions.status_code == 200, sessions.text
+        assert any(row["active"] for row in sessions.json())
+
+        # Cancelling a paid, unpublished campaign creates a refund case.
+        cancelled = client.post(
+            f"/api/v1/campaigns/{campaign_id}/cancel",
+            headers=auth(advertiser_token),
+            json={"reason": "Campaign is no longer required"},
+        )
+        assert cancelled.status_code == 200, cancelled.text
+        assert cancelled.json()["refund_request_id"] is not None
+        refund_id = cancelled.json()["refund_request_id"]
+
+        refunds = client.get("/api/v1/refunds", headers=auth(advertiser_token))
+        assert refunds.status_code == 200, refunds.text
+        assert any(row["id"] == refund_id and row["status"] == "requested" for row in refunds.json())
+
+        refund_decision = client.post(
+            f"/api/v1/admin/refunds/{refund_id}/decision",
+            headers=auth(admin_login_with_otp.json()["access_token"]),
+            json={"status": "approved", "staff_note": "Approved in lifecycle smoke test"},
+        )
+        assert refund_decision.status_code == 200, refund_decision.text
+        assert refund_decision.json()["status"] == "approved"
+
+        # Sign-out-all invalidates the token used to request it.
+        revoked = client.post("/api/v1/profile/logout-all", headers=auth(advertiser_token))
+        assert revoked.status_code == 200, revoked.text
+        after_revoke = client.get("/api/v1/auth/me", headers=auth(advertiser_token))
+        assert after_revoke.status_code == 401
