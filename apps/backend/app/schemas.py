@@ -85,6 +85,8 @@ class CampaignMediaOut(BaseModel):
 class CampaignCreate(BaseModel):
     title: str = Field(min_length=3, max_length=160)
     engagement_mode: str = Field(default="normal", pattern="^(normal|competition_one_comment)$")
+    competition_closes_at: datetime | None = None
+    competition_auto_certify: bool = False
     caption: str = Field(min_length=3, max_length=5000)
     package_code: str = Field(min_length=2, max_length=50)
     preferred_publish_at: datetime | None = None
@@ -100,6 +102,9 @@ class CampaignOut(BaseModel):
     package_id: int
     title: str
     engagement_mode: str
+    competition_closes_at: datetime | None
+    competition_closed_at: datetime | None
+    competition_auto_certify: bool
     caption: str
     media_url: str | None
     media_items: list[CampaignMediaOut] = Field(default_factory=list)
