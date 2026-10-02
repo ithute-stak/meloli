@@ -1,7 +1,7 @@
 import os
 import re
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import dns.resolver
@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .models import AdvertisingPackage, AuditLog, Campaign, Tenant, TenantDomain, TenantSetting, User, UserRole
+from .models import AdvertisingPackage, AuditLog, Campaign, Tenant, TenantDomain, TenantPlan, TenantSetting, TenantSubscription, User, UserRole
 from .security import decode_access_token, encrypt_secret, hash_password, validate_token_user
 
 router = APIRouter()
@@ -42,6 +42,37 @@ class DomainWrite(BaseModel):
 
 
 class TenantStateWrite(BaseModel):
+    active: bool
+
+
+class TenantPlanWrite(BaseModel):
+    code: str = Field(min_length=2, max_length=50)
+    name: str = Field(min_length=2, max_length=160)
+    description: str = Field(default="", max_length=2000)
+    monthly_price: float = Field(ge=0)
+    annual_price: float = Field(ge=0)
+    currency: str = Field(default="LSL", min_length=3, max_length=8)
+    max_staff: int = Field(default=2, ge=1, le=500)
+    max_campaigns_monthly: int = Field(default=50, ge=1, le=100000)
+    custom_domains: bool = False
+    competition_certification: bool = False
+    active: bool = True
+
+
+class TenantSubscriptionWrite(BaseModel):
+    plan_id: int
+    billing_period: str = Field(default="monthly", pattern=r"^(monthly|annual)$")
+    status: str = Field(default="active", pattern=r"^(trialing|active|past_due|suspended|cancelled)$")
+
+
+class TenantStaffCreate(BaseModel):
+    full_name: str = Field(min_length=2, max_length=160)
+    email: EmailStr
+    password: str = Field(min_length=10, max_length=128)
+    role: UserRole
+
+
+class TenantStaffState(BaseModel):
     active: bool
 
 
@@ -121,6 +152,71 @@ def set_tenant_setting(db: Session, tenant_id: int, key: str, value: str | None,
         db.add(TenantSetting(tenant_id=tenant_id, key=key, value=stored, encrypted=encrypted))
 
 
+def current_tenant_subscription(db: Session, tenant_id: int) -> tuple[TenantSubscription | None, TenantPlan | None]:
+    subscription = db.scalar(select(TenantSubscription).where(TenantSubscription.tenant_id == tenant_id))
+    plan = db.get(TenantPlan, subscription.plan_id) if subscription else None
+    return subscription, plan
+
+
+def subscription_payload(subscription: TenantSubscription | None, plan: TenantPlan | None) -> dict | None:
+    if not subscription or not plan:
+        return None
+    now = datetime.now(timezone.utc)
+    period_end = subscription.current_period_end
+    if period_end.tzinfo is None:
+        period_end = period_end.replace(tzinfo=timezone.utc)
+    return {
+        "id": subscription.id,
+        "status": subscription.status,
+        "billing_period": subscription.billing_period,
+        "price_amount": float(subscription.price_amount),
+        "currency": subscription.currency,
+        "current_period_start": subscription.current_period_start,
+        "current_period_end": subscription.current_period_end,
+        "trial_ends_at": subscription.trial_ends_at,
+        "usable": subscription.status in {"trialing", "active"} and period_end >= now,
+        "plan": {
+            "id": plan.id,
+            "code": plan.code,
+            "name": plan.name,
+            "max_staff": plan.max_staff,
+            "max_campaigns_monthly": plan.max_campaigns_monthly,
+            "custom_domains": plan.custom_domains,
+            "competition_certification": plan.competition_certification,
+        },
+    }
+
+
+def onboarding_payload(db: Session, tenant: Tenant) -> dict:
+    subscription, plan = current_tenant_subscription(db, tenant.id)
+    staff_count = db.scalar(
+        select(func.count(User.id)).where(
+            User.tenant_id == tenant.id,
+            User.is_tenant_admin.is_(False),
+            User.role.in_([UserRole.REVIEWER, UserRole.PUBLISHER]),
+        )
+    ) or 0
+    package_count = db.scalar(select(func.count(AdvertisingPackage.id)).where(AdvertisingPackage.tenant_id == tenant.id)) or 0
+    custom_domain = bool(db.scalar(select(TenantDomain.id).where(TenantDomain.tenant_id == tenant.id, TenantDomain.status == "verified")))
+    steps = [
+        {"key": "identity", "label": "Portal identity", "complete": bool(tenant.name and tenant.slug)},
+        {"key": "facebook_page", "label": "Facebook Page identity", "complete": bool(tenant.facebook_page_id)},
+        {"key": "meta", "label": "Meta connection", "complete": tenant_setting(db, tenant.id, "meta.connected") == "true"},
+        {"key": "packages", "label": "Advertising packages", "complete": package_count > 0},
+        {"key": "staff", "label": "Team setup", "complete": staff_count > 0},
+    ]
+    if plan and plan.custom_domains:
+        steps.append({"key": "domain", "label": "Custom domain", "complete": custom_domain})
+    completed = sum(1 for step in steps if step["complete"])
+    return {
+        "percent": round((completed / len(steps)) * 100) if steps else 100,
+        "completed": completed,
+        "total": len(steps),
+        "steps": steps,
+        "subscription": subscription_payload(subscription, plan),
+    }
+
+
 def tenant_payload(tenant: Tenant) -> dict:
     base = os.getenv("FRONTEND_PUBLIC_URL", "http://localhost:3000").rstrip("/")
     return {
@@ -198,6 +294,21 @@ def register_tenant(payload: TenantRegister, db: Session = Depends(get_db)):
             )
         )
 
+    starter_plan = db.scalar(select(TenantPlan).where(TenantPlan.code == "STARTER", TenantPlan.active.is_(True)))
+    if starter_plan:
+        now = datetime.now(timezone.utc)
+        db.add(TenantSubscription(
+            tenant_id=tenant.id,
+            plan_id=starter_plan.id,
+            status="trialing",
+            billing_period="monthly",
+            price_amount=starter_plan.monthly_price,
+            currency=starter_plan.currency,
+            current_period_start=now,
+            current_period_end=now + timedelta(days=14),
+            trial_ends_at=now + timedelta(days=14),
+        ))
+
     db.add(AuditLog(actor_user_id=owner.id, action="tenant.registered", entity_type="tenant", entity_id=str(tenant.id), detail=tenant.slug))
     db.commit()
     return {**tenant_payload(tenant), "owner_user_id": owner.id}
@@ -224,6 +335,8 @@ def list_tenants(_: User = Depends(platform_admin), db: Session = Depends(get_db
     result = []
     for tenant in rows:
         domains = list(db.scalars(select(TenantDomain).where(TenantDomain.tenant_id == tenant.id).order_by(TenantDomain.created_at)))
+        subscription, plan = current_tenant_subscription(db, tenant.id)
+        onboarding = onboarding_payload(db, tenant)
         result.append({
             **tenant_payload(tenant),
             "owner": next((
@@ -233,6 +346,8 @@ def list_tenants(_: User = Depends(platform_admin), db: Session = Depends(get_db
             "users": db.scalar(select(func.count(User.id)).where(User.tenant_id == tenant.id)) or 0,
             "campaigns": db.scalar(select(func.count(Campaign.id)).where(Campaign.tenant_id == tenant.id)) or 0,
             "domains": [{"id": d.id, "hostname": d.hostname, "status": d.status, "verified_at": d.verified_at} for d in domains],
+            "subscription": subscription_payload(subscription, plan),
+            "onboarding_percent": onboarding["percent"],
         })
     return result
 
@@ -281,6 +396,12 @@ def update_tenant_profile(payload: TenantProfileWrite, admin: User = Depends(ten
 
 @router.post("/api/v1/tenant-admin/domains", status_code=201)
 def add_custom_domain(payload: DomainWrite, admin: User = Depends(tenant_admin), db: Session = Depends(get_db)):
+    subscription, plan = current_tenant_subscription(db, admin.tenant_id)
+    details = subscription_payload(subscription, plan)
+    if not details or not details["usable"]:
+        raise HTTPException(status_code=402, detail="An active tenant subscription is required for custom domains")
+    if not plan or not plan.custom_domains:
+        raise HTTPException(status_code=403, detail="Your current tenant plan does not include custom domains")
     hostname = clean_hostname(payload.hostname)
     existing = db.scalar(select(TenantDomain).where(TenantDomain.hostname == hostname))
     if existing:
@@ -363,6 +484,201 @@ def verify_custom_domain(domain_id: int, admin: User = Depends(platform_admin), 
     db.add(AuditLog(actor_user_id=admin.id, action="tenant.domain_verified", entity_type="tenant_domain", entity_id=str(row.id), detail=row.hostname))
     db.commit()
     return {"id": row.id, "hostname": row.hostname, "status": row.status, "verified_at": row.verified_at}
+
+
+@router.get("/api/v1/admin/tenant-plans")
+def list_tenant_plans(_: User = Depends(platform_admin), db: Session = Depends(get_db)):
+    rows = list(db.scalars(select(TenantPlan).order_by(TenantPlan.monthly_price, TenantPlan.id)))
+    return [{
+        "id": row.id,
+        "code": row.code,
+        "name": row.name,
+        "description": row.description,
+        "monthly_price": float(row.monthly_price),
+        "annual_price": float(row.annual_price),
+        "currency": row.currency,
+        "max_staff": row.max_staff,
+        "max_campaigns_monthly": row.max_campaigns_monthly,
+        "custom_domains": row.custom_domains,
+        "competition_certification": row.competition_certification,
+        "active": row.active,
+    } for row in rows]
+
+
+@router.post("/api/v1/admin/tenant-plans", status_code=201)
+def create_tenant_plan(payload: TenantPlanWrite, admin: User = Depends(platform_admin), db: Session = Depends(get_db)):
+    code = payload.code.strip().upper()
+    if db.scalar(select(TenantPlan.id).where(TenantPlan.code == code)):
+        raise HTTPException(status_code=409, detail="Tenant plan code already exists")
+    plan = TenantPlan(
+        code=code,
+        name=payload.name.strip(),
+        description=payload.description,
+        monthly_price=payload.monthly_price,
+        annual_price=payload.annual_price,
+        currency=payload.currency.upper(),
+        max_staff=payload.max_staff,
+        max_campaigns_monthly=payload.max_campaigns_monthly,
+        custom_domains=payload.custom_domains,
+        competition_certification=payload.competition_certification,
+        active=payload.active,
+    )
+    db.add(plan)
+    db.flush()
+    db.add(AuditLog(actor_user_id=admin.id, action="tenant.plan_created", entity_type="tenant_plan", entity_id=str(plan.id), detail=plan.code))
+    db.commit()
+    return {"id": plan.id, "code": plan.code, "name": plan.name}
+
+
+@router.put("/api/v1/admin/tenants/{tenant_id}/subscription")
+def set_tenant_subscription(tenant_id: int, payload: TenantSubscriptionWrite, admin: User = Depends(platform_admin), db: Session = Depends(get_db)):
+    tenant = db.get(Tenant, tenant_id)
+    plan = db.get(TenantPlan, payload.plan_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if not plan or not plan.active:
+        raise HTTPException(status_code=400, detail="Tenant plan is unavailable")
+    now = datetime.now(timezone.utc)
+    days = 366 if payload.billing_period == "annual" else 31
+    amount = plan.annual_price if payload.billing_period == "annual" else plan.monthly_price
+    subscription = db.scalar(select(TenantSubscription).where(TenantSubscription.tenant_id == tenant.id))
+    if subscription is None:
+        subscription = TenantSubscription(
+            tenant_id=tenant.id,
+            plan_id=plan.id,
+            current_period_start=now,
+            current_period_end=now + timedelta(days=days),
+        )
+        db.add(subscription)
+    subscription.plan_id = plan.id
+    subscription.status = payload.status
+    subscription.billing_period = payload.billing_period
+    subscription.price_amount = amount
+    subscription.currency = plan.currency
+    subscription.current_period_start = now
+    subscription.current_period_end = now + timedelta(days=days)
+    subscription.trial_ends_at = None
+    db.add(AuditLog(actor_user_id=admin.id, action="tenant.subscription_updated", entity_type="tenant", entity_id=str(tenant.id), detail=f"{plan.code}:{payload.billing_period}:{payload.status}"))
+    db.commit()
+    return subscription_payload(subscription, plan)
+
+
+@router.get("/api/v1/admin/platform/summary")
+def platform_summary(_: User = Depends(platform_admin), db: Session = Depends(get_db)):
+    tenants = list(db.scalars(select(Tenant)))
+    subscriptions = list(db.scalars(select(TenantSubscription)))
+    plans = {plan.id: plan for plan in db.scalars(select(TenantPlan))}
+    active_subscriptions = []
+    monthly_recurring_revenue = 0.0
+    annual_contract_value = 0.0
+    now = datetime.now(timezone.utc)
+    for subscription in subscriptions:
+        end = subscription.current_period_end
+        end = end.replace(tzinfo=timezone.utc) if end.tzinfo is None else end
+        if subscription.status not in {"trialing", "active"} or end < now:
+            continue
+        active_subscriptions.append(subscription)
+        if subscription.status == "active":
+            amount = float(subscription.price_amount)
+            monthly_recurring_revenue += amount / 12 if subscription.billing_period == "annual" else amount
+            annual_contract_value += amount if subscription.billing_period == "annual" else amount * 12
+    return {
+        "tenants": len(tenants),
+        "active_tenants": sum(1 for tenant in tenants if tenant.active),
+        "trialing_subscriptions": sum(1 for row in active_subscriptions if row.status == "trialing"),
+        "active_subscriptions": sum(1 for row in active_subscriptions if row.status == "active"),
+        "subscription_mrr": round(monthly_recurring_revenue, 2),
+        "subscription_acv": round(annual_contract_value, 2),
+        "currency": "LSL",
+        "connected_meta_pages": db.scalar(select(func.count(TenantSetting.id)).where(TenantSetting.key == "meta.connected", TenantSetting.value == "true")) or 0,
+        "verified_domains": db.scalar(select(func.count(TenantDomain.id)).where(TenantDomain.status == "verified")) or 0,
+        "plans": [{"id": p.id, "code": p.code, "name": p.name} for p in plans.values()],
+    }
+
+
+@router.get("/api/v1/tenant-admin/onboarding")
+def tenant_onboarding(admin: User = Depends(tenant_admin), db: Session = Depends(get_db)):
+    tenant = db.get(Tenant, admin.tenant_id)
+    return onboarding_payload(db, tenant)
+
+
+@router.get("/api/v1/tenant-admin/staff")
+def list_tenant_staff(admin: User = Depends(tenant_admin), db: Session = Depends(get_db)):
+    rows = list(db.scalars(
+        select(User).where(
+            User.tenant_id == admin.tenant_id,
+            User.is_tenant_admin.is_(False),
+            User.role.in_([UserRole.REVIEWER, UserRole.PUBLISHER]),
+        ).order_by(User.created_at.desc())
+    ))
+    return [{
+        "id": row.id,
+        "full_name": row.full_name,
+        "email": row.email,
+        "role": row.role,
+        "active": row.is_active,
+        "two_factor_enabled": row.two_factor_enabled,
+        "created_at": row.created_at,
+    } for row in rows]
+
+
+@router.post("/api/v1/tenant-admin/staff", status_code=201)
+def create_tenant_staff(payload: TenantStaffCreate, admin: User = Depends(tenant_admin), db: Session = Depends(get_db)):
+    if payload.role not in {UserRole.REVIEWER, UserRole.PUBLISHER}:
+        raise HTTPException(status_code=400, detail="Tenant staff role must be reviewer or publisher")
+    subscription, plan = current_tenant_subscription(db, admin.tenant_id)
+    details = subscription_payload(subscription, plan)
+    if not details or not details["usable"]:
+        raise HTTPException(status_code=402, detail="An active tenant subscription is required to add staff")
+    staff_count = db.scalar(select(func.count(User.id)).where(
+        User.tenant_id == admin.tenant_id,
+        User.is_tenant_admin.is_(False),
+        User.role.in_([UserRole.REVIEWER, UserRole.PUBLISHER]),
+        User.is_active.is_(True),
+    )) or 0
+    if plan and staff_count >= plan.max_staff:
+        raise HTTPException(status_code=409, detail=f"Your {plan.name} plan allows up to {plan.max_staff} active staff accounts")
+    email = str(payload.email).lower()
+    if db.scalar(select(User.id).where(User.email == email)):
+        raise HTTPException(status_code=409, detail="An account with this email already exists")
+    user = User(
+        tenant_id=admin.tenant_id,
+        is_tenant_admin=False,
+        full_name=payload.full_name.strip(),
+        email=email,
+        password_hash=hash_password(payload.password),
+        role=payload.role,
+        is_active=True,
+    )
+    db.add(user)
+    db.flush()
+    db.add(AuditLog(actor_user_id=admin.id, action="tenant.staff_created", entity_type="user", entity_id=str(user.id), detail=payload.role.value))
+    db.commit()
+    return {"id": user.id, "full_name": user.full_name, "email": user.email, "role": user.role, "active": user.is_active}
+
+
+@router.patch("/api/v1/tenant-admin/staff/{user_id}/state")
+def set_tenant_staff_state(user_id: int, payload: TenantStaffState, admin: User = Depends(tenant_admin), db: Session = Depends(get_db)):
+    user = db.get(User, user_id)
+    if not user or user.tenant_id != admin.tenant_id or user.is_tenant_admin or user.role not in {UserRole.REVIEWER, UserRole.PUBLISHER}:
+        raise HTTPException(status_code=404, detail="Staff account not found")
+    if payload.active and not user.is_active:
+        subscription, plan = current_tenant_subscription(db, admin.tenant_id)
+        details = subscription_payload(subscription, plan)
+        if not details or not details["usable"]:
+            raise HTTPException(status_code=402, detail="An active tenant subscription is required to activate staff")
+        active_count = db.scalar(select(func.count(User.id)).where(
+            User.tenant_id == admin.tenant_id,
+            User.is_tenant_admin.is_(False),
+            User.role.in_([UserRole.REVIEWER, UserRole.PUBLISHER]),
+            User.is_active.is_(True),
+        )) or 0
+        if plan and active_count >= plan.max_staff:
+            raise HTTPException(status_code=409, detail=f"Your {plan.name} plan allows up to {plan.max_staff} active staff accounts")
+    user.is_active = payload.active
+    db.add(AuditLog(actor_user_id=admin.id, action="tenant.staff_enabled" if payload.active else "tenant.staff_disabled", entity_type="user", entity_id=str(user.id)))
+    db.commit()
+    return {"id": user.id, "active": user.is_active}
 
 
 @router.get("/api/v1/tenant-admin/meta")
