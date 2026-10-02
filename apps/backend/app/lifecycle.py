@@ -145,6 +145,8 @@ def decide_final_proof(campaign_id: int, payload: ProofDecision, user: User = De
 
     db.commit()
     db.refresh(campaign)
+    from .corporate_api import emit_corporate_webhook
+    emit_corporate_webhook(db, campaign, "campaign.proof_" + payload.decision)
     return {
         "id": campaign.id,
         "status": campaign.status,
@@ -191,6 +193,8 @@ def cancel_campaign(campaign_id: int, payload: CampaignCancel, user: User = Depe
             refund_id = refund.id
     audit(db, user, "campaign.cancelled", "campaign", campaign.id, payload.reason.strip())
     db.commit()
+    from .corporate_api import emit_corporate_webhook
+    emit_corporate_webhook(db, campaign, "campaign.cancelled")
     return {"id": campaign.id, "cancelled_at": campaign.cancelled_at, "refund_request_id": refund_id}
 
 
