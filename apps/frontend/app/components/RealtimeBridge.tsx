@@ -98,3 +98,10 @@ export function subscribeRealtime(handler:(event:RealtimeEvent)=>void,topics?:st
   window.addEventListener("meloli:realtime",listener);
   return()=>window.removeEventListener("meloli:realtime",listener);
 }
+
+export function useRealtimeTopics(topics:string[],handler:()=>void){
+  const handlerRef=useRef(handler);
+  handlerRef.current=handler;
+  const key=topics.join("|");
+  useEffect(()=>subscribeRealtime(()=>handlerRef.current(),topics),[key]);
+}
