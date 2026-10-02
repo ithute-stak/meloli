@@ -394,3 +394,33 @@ class CampaignReviewChecklist(Base):
     completed_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ReferralPartner(Base):
+    __tablename__ = "referral_partners"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(180))
+    code: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    commission_percent: Mapped[float] = mapped_column(Numeric(5, 2), default=0)
+    contact_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ReferralAttribution(Base):
+    __tablename__ = "referral_attributions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    partner_id: Mapped[int] = mapped_column(ForeignKey("referral_partners.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
+    referred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ReferralPayout(Base):
+    __tablename__ = "referral_payouts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    partner_id: Mapped[int] = mapped_column(ForeignKey("referral_partners.id"), index=True)
+    amount: Mapped[float] = mapped_column(Numeric(12, 2))
+    reference: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    recorded_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
