@@ -32,6 +32,10 @@ class RefundCreate(BaseModel):
     reason: str = Field(min_length=5, max_length=2000)
 
 
+class CampaignCancel(BaseModel):
+    reason: str = Field(min_length=5, max_length=2000)
+
+
 class RefundDecision(BaseModel):
     status: str = Field(pattern="^(approved|rejected)$")
     staff_note: str | None = Field(default=None, max_length=2000)
@@ -101,6 +105,46 @@ def complete_password_reset(payload: ResetComplete, db: Session = Depends(get_db
     audit(db, user, "password_reset.completed", "user", user.id)
     db.commit()
     return {"message": "Password updated successfully. You can now sign in."}
+
+
+@router.post("/api/v1/campaigns/{campaign_id}/cancel")
+def cancel_campaign(campaign_id: int, payload: CampaignCancel, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if user.role == UserRole.ADVERTISER and campaign.advertiser_id != user.id:
+        raise HTTPException(status_code=403, detail="You cannot cancel this campaign")
+    if campaign.cancelled_at is not None:
+        raise HTTPException(status_code=409, detail="Campaign is already cancelled")
+    if campaign.status == CampaignStatus.PUBLISHED or campaign.published_at is not None:
+        raise HTTPException(status_code=409, detail="Published campaigns cannot be cancelled through self-service")
+    campaign.cancelled_at = datetime.now(timezone.utc)
+    campaign.cancellation_reason = payload.reason.strip()
+    campaign.cancelled_by_user_id = user.id
+    campaign.scheduled_publish_at = None
+
+    paid = db.scalar(
+        select(Payment)
+        .where(Payment.campaign_id == campaign.id, Payment.status == PaymentStatus.PAID)
+        .order_by(Payment.created_at.desc())
+    )
+    refund_id = None
+    if paid:
+        existing = db.scalar(select(RefundRequest).where(RefundRequest.payment_id == paid.id, RefundRequest.status == "requested"))
+        if existing:
+            refund_id = existing.id
+        else:
+            refund = RefundRequest(
+                payment_id=paid.id,
+                user_id=campaign.advertiser_id,
+                reason=f"Campaign cancelled: {payload.reason.strip()}",
+            )
+            db.add(refund)
+            db.flush()
+            refund_id = refund.id
+    audit(db, user, "campaign.cancelled", "campaign", campaign.id, payload.reason.strip())
+    db.commit()
+    return {"id": campaign.id, "cancelled_at": campaign.cancelled_at, "refund_request_id": refund_id}
 
 
 @router.post("/api/v1/refunds", status_code=201)
