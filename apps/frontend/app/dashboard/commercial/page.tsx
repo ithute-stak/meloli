@@ -11,6 +11,8 @@ type Plan={id:number;code:string;name:string;monthly_price:number;included_posts
 type Advertiser={id:number;full_name:string;business_name?:string|null;email:string};
 type Subscription={id:number;user_id:number;advertiser:string;plan_id:number;plan:string;period_start:string;period_end:string;remaining_posts:number;active:boolean};
 type Statement={advertiser:{id:number;name:string;email:string};account:{credit_limit:number;credit_used:number;available_credit:number;billing_cycle_day:number;active:boolean};transactions:{payment_id:number;campaign_id:number;campaign:string;amount:number;currency:string;created_at:string;status:string}[]};
+type ReceivableRow={user_id:number;advertiser:string;email?:string|null;credit_limit:number;billing_cycle_day:number;outstanding:number;available:number;utilization_percent:number;overdue:boolean;low_credit:boolean};
+type Receivables={accounts:number;outstanding_total:number;overdue_total:number;overdue_accounts:number;low_credit_accounts:number;rows:ReceivableRow[]};
 
 export default function CommercialPage(){
  const router=useRouter();
@@ -19,6 +21,8 @@ export default function CommercialPage(){
  const [advertisers,setAdvertisers]=useState<Advertiser[]>([]);
  const [subscriptions,setSubscriptions]=useState<Subscription[]>([]);
  const [statement,setStatement]=useState<Statement|null>(null);
+ const [receivables,setReceivables]=useState<Receivables|null>(null);
+ const [lastSettlementId,setLastSettlementId]=useState<number|null>(null);
  const [loading,setLoading]=useState(true);
  const [error,setError]=useState("");
  const [message,setMessage]=useState("");
@@ -27,17 +31,20 @@ export default function CommercialPage(){
  const [advertiserId,setAdvertiserId]=useState("");
  const [creditLimit,setCreditLimit]=useState("");
  const [planId,setPlanId]=useState("");
+ const [settlementMethod,setSettlementMethod]=useState("bank_transfer");
+ const [settlementReference,setSettlementReference]=useState("");
 
  async function load(){
    setLoading(true);setError("");
    try{
-     const [p,pl,a,s]=await Promise.all([
+     const [p,pl,a,s,r]=await Promise.all([
        api<Promo[]>("/api/v1/admin/promos/performance",{},true),
        api<Plan[]>("/api/v1/admin/subscription-plans",{},true),
        api<Advertiser[]>("/api/v1/admin/advertisers",{},true),
-       api<Subscription[]>("/api/v1/admin/subscriptions",{},true)
+       api<Subscription[]>("/api/v1/admin/subscriptions",{},true),
+       api<Receivables>("/api/v1/admin/receivables/summary",{},true)
      ]);
-     setPromos(p);setPlans(pl);setAdvertisers(a);setSubscriptions(s);
+     setPromos(p);setPlans(pl);setAdvertisers(a);setSubscriptions(s);setReceivables(r);
    }catch(e){setError(e instanceof Error?e.message:"Unable to load commercial settings")}
    finally{setLoading(false)}
  }
@@ -61,8 +68,11 @@ export default function CommercialPage(){
  }
  async function renewSubscription(id:number){setError("");try{await api("/api/v1/admin/subscriptions/"+id+"/renew",{method:"POST",body:JSON.stringify({months:1})},true);setMessage("Subscription renewed for one month.");await load();}catch(e){setError(e instanceof Error?e.message:"Unable to renew subscription")}}
  async function loadStatement(){if(!advertiserId)return;setError("");try{setStatement(await api<Statement>("/api/v1/admin/advertisers/"+advertiserId+"/corporate/statement",{},true));}catch(e){setStatement(null);setError(e instanceof Error?e.message:"Unable to load corporate statement")}}
- async function settleAccount(){if(!advertiserId)return;setError("");try{await api("/api/v1/admin/advertisers/"+advertiserId+"/corporate/settle",{method:"POST",body:JSON.stringify({amount:null})},true);setMessage("Corporate balance settled.");await loadStatement();}catch(e){setError(e instanceof Error?e.message:"Unable to settle corporate balance")}}
- async function downloadStatement(){if(!advertiserId)return;setError("");try{const token=getToken();const response=await fetch(API_URL+"/api/v1/admin/advertisers/"+advertiserId+"/corporate/statement.pdf",{headers:token?{Authorization:"Bearer "+token}:{}});if(!response.ok)throw new Error("Unable to generate statement PDF");const blob=await response.blob();const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="meloli-corporate-statement-"+advertiserId+".pdf";a.click();URL.revokeObjectURL(url);}catch(e){setError(e instanceof Error?e.message:"Unable to download statement")}}
+ async function settleAccount(){if(!advertiserId)return;setError("");try{const result=await api<{settlement_id:number}>("/api/v1/admin/advertisers/"+advertiserId+"/corporate/settle",{method:"POST",body:JSON.stringify({amount:null,method:settlementMethod,reference:settlementReference||null})},true);setLastSettlementId(result.settlement_id);setSettlementReference("");setMessage("Corporate balance settled and receipt created.");await loadStatement();await load();}catch(e){setError(e instanceof Error?e.message:"Unable to settle corporate balance")}}
+ async function downloadPdf(path:string,filename:string){setError("");try{const token=getToken();const response=await fetch(API_URL+path,{headers:token?{Authorization:"Bearer "+token}:{}});if(!response.ok)throw new Error("Unable to generate PDF");const blob=await response.blob();const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=filename;a.click();URL.revokeObjectURL(url);}catch(e){setError(e instanceof Error?e.message:"Unable to download PDF")}}
+ async function downloadStatement(){if(!advertiserId)return;await downloadPdf("/api/v1/admin/advertisers/"+advertiserId+"/corporate/statement.pdf","meloli-corporate-statement-"+advertiserId+".pdf")}
+ async function downloadInvoice(userId?:number){const id=userId||Number(advertiserId);if(!id)return;await downloadPdf("/api/v1/admin/advertisers/"+id+"/corporate/invoice.pdf","meloli-corporate-invoice-"+id+".pdf")}
+ async function downloadSettlementReceipt(){if(!lastSettlementId)return;await downloadPdf("/api/v1/admin/corporate-settlements/"+lastSettlementId+"/receipt.pdf","meloli-corporate-receipt-"+lastSettlementId+".pdf")}
 
  return <main className="min-h-screen bg-[#f5f6fa] text-slate-900">
   <header className="border-b border-slate-200 bg-white"><div className="mx-auto flex h-20 max-w-[1500px] items-center gap-4 px-4 sm:px-6"><Link href="/dashboard" className="grid h-10 w-10 place-items-center rounded-xl border border-slate-200"><ArrowLeft size={18}/></Link><div><h1 className="font-black text-[#070a45]">Commercial Growth</h1><p className="text-xs text-slate-500">Promotions, corporate credit and monthly advertising plans.</p></div></div></header>
@@ -74,6 +84,10 @@ export default function CommercialPage(){
     <section className="rounded-[1.6rem] border border-slate-200 bg-white p-5"><Header icon={<CalendarRange/>} title="Monthly plans" text="Create recurring plans for advertisers who post frequently."/><form onSubmit={createPlan} className="mt-5 space-y-3"><input className="field uppercase" placeholder="Plan code" value={plan.code} onChange={e=>setPlan(v=>({...v,code:e.target.value.toUpperCase()}))} required/><input className="field" placeholder="Plan name" value={plan.name} onChange={e=>setPlan(v=>({...v,name:e.target.value}))} required/><div className="grid grid-cols-2 gap-2"><input className="field" type="number" min="0" placeholder="Monthly LSL" value={plan.monthly_price} onChange={e=>setPlan(v=>({...v,monthly_price:e.target.value}))} required/><input className="field" type="number" min="1" placeholder="Posts" value={plan.included_posts} onChange={e=>setPlan(v=>({...v,included_posts:e.target.value}))} required/></div><button className="primary">Create monthly plan</button></form><div className="mt-5 space-y-2">{plans.map(p=><div key={p.id} className="rounded-xl bg-slate-50 p-3"><b className="text-sm text-[#070a45]">{p.name}</b><p className="mt-1 text-xs text-slate-500">LSL {p.monthly_price.toFixed(2)} · {p.included_posts} adverts</p></div>)}</div></section>
     <section className="rounded-[1.6rem] border border-slate-200 bg-white p-5"><Header icon={<Building2/>} title="Corporate accounts" text="Give approved clients controlled credit or assign a monthly plan."/><div className="mt-5 space-y-3"><select className="field" value={advertiserId} onChange={e=>setAdvertiserId(e.target.value)}><option value="">Select advertiser</option>{advertisers.map(a=><option key={a.id} value={a.id}>{a.business_name||a.full_name} · {a.email}</option>)}</select><input className="field" type="number" min="0" placeholder="Corporate credit limit" value={creditLimit} onChange={e=>setCreditLimit(e.target.value)}/><button onClick={saveCorporate} className="primary" type="button">Save credit account</button><div className="my-4 border-t border-slate-100"/><select className="field" value={planId} onChange={e=>setPlanId(e.target.value)}><option value="">Select monthly plan</option>{plans.filter(p=>p.active).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select><button onClick={assignPlan} className="secondary" type="button">Assign monthly plan</button></div></section>
    </div>}
+   {!loading&&receivables&&<section className="mt-6 rounded-[1.6rem] border border-slate-200 bg-white p-5 sm:p-6">
+    <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between"><Header icon={<Building2/>} title="Accounts receivable" text="Corporate balances, billing-cycle risk and available credit across approved advertisers."/><div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><Mini label="Outstanding" value={"LSL "+receivables.outstanding_total.toFixed(2)}/><Mini label="Overdue" value={"LSL "+receivables.overdue_total.toFixed(2)}/><Mini label="Overdue accts" value={String(receivables.overdue_accounts)}/><Mini label="Low credit" value={String(receivables.low_credit_accounts)}/></div></div>
+    <div className="mt-5 overflow-x-auto"><table className="w-full min-w-[760px] text-left text-xs"><thead><tr className="border-b border-slate-100 text-[10px] font-black uppercase tracking-wider text-slate-400"><th className="px-3 py-3">Advertiser</th><th className="px-3 py-3">Outstanding</th><th className="px-3 py-3">Credit used</th><th className="px-3 py-3">Billing day</th><th className="px-3 py-3">Status</th><th className="px-3 py-3 text-right">Document</th></tr></thead><tbody>{receivables.rows.map(r=><tr key={r.user_id} className="border-b border-slate-50"><td className="px-3 py-4"><p className="font-extrabold text-[#070a45]">{r.advertiser}</p><p className="mt-1 text-[11px] text-slate-400">{r.email}</p></td><td className="px-3 py-4 font-extrabold text-[#070a45]">LSL {r.outstanding.toFixed(2)}</td><td className="px-3 py-4">{r.utilization_percent.toFixed(1)}%</td><td className="px-3 py-4">Day {r.billing_cycle_day}</td><td className="px-3 py-4"><span className={"rounded-full px-2.5 py-1 font-extrabold "+(r.overdue?"bg-rose-50 text-rose-700":r.low_credit?"bg-amber-50 text-amber-700":"bg-emerald-50 text-emerald-700")}>{r.overdue?"Overdue":r.low_credit?"Low credit":"Current"}</span></td><td className="px-3 py-4 text-right"><button type="button" onClick={()=>downloadInvoice(r.user_id)} className="rounded-lg border border-slate-200 bg-white px-3 py-2 font-extrabold text-[#070a45]">Invoice PDF</button></td></tr>)}</tbody></table></div>
+   </section>}
    {!loading&&<div className="mt-6 grid gap-6 xl:grid-cols-2">
     <section className="rounded-[1.6rem] border border-slate-200 bg-white p-5">
       <Header icon={<CalendarRange/>} title="Active subscriptions" text="Renew monthly plans and see remaining advertising allocation."/>
@@ -81,8 +95,8 @@ export default function CommercialPage(){
     </section>
     <section className="rounded-[1.6rem] border border-slate-200 bg-white p-5">
       <Header icon={<Building2/>} title="Corporate statement" text="Review credit usage for the selected advertiser and clear the balance when payment is received."/>
-      <div className="mt-5 grid gap-2 sm:grid-cols-2"><button type="button" onClick={loadStatement} className="secondary">Load statement</button><button type="button" onClick={downloadStatement} className="primary">Download PDF</button></div>
-      {statement&&<div className="mt-4"><div className="grid grid-cols-3 gap-2"><Mini label="Limit" value={"LSL "+statement.account.credit_limit.toFixed(2)}/><Mini label="Used" value={"LSL "+statement.account.credit_used.toFixed(2)}/><Mini label="Available" value={"LSL "+statement.account.available_credit.toFixed(2)}/></div><div className="mt-4 max-h-56 space-y-2 overflow-auto">{statement.transactions.length===0?<p className="text-xs text-slate-500">No corporate-credit transactions.</p>:statement.transactions.map(t=><div key={t.payment_id} className="flex justify-between gap-4 rounded-xl bg-slate-50 p-3 text-xs"><div><b className="text-slate-700">{t.campaign}</b><p className="mt-1 text-slate-400">{new Date(t.created_at).toLocaleDateString()}</p></div><b className="text-[#070a45]">{t.currency} {t.amount.toFixed(2)}</b></div>)}</div>{statement.account.credit_used>0&&<button type="button" onClick={settleAccount} className="mt-4 primary">Mark full balance settled</button>}</div>}
+      <div className="mt-5 grid gap-2 sm:grid-cols-3"><button type="button" onClick={loadStatement} className="secondary">Load statement</button><button type="button" onClick={downloadStatement} className="secondary">Statement PDF</button><button type="button" onClick={()=>downloadInvoice()} className="primary">Invoice PDF</button></div>
+      {statement&&<div className="mt-4"><div className="grid grid-cols-3 gap-2"><Mini label="Limit" value={"LSL "+statement.account.credit_limit.toFixed(2)}/><Mini label="Used" value={"LSL "+statement.account.credit_used.toFixed(2)}/><Mini label="Available" value={"LSL "+statement.account.available_credit.toFixed(2)}/></div><div className="mt-4 max-h-56 space-y-2 overflow-auto">{statement.transactions.length===0?<p className="text-xs text-slate-500">No corporate-credit transactions.</p>:statement.transactions.map(t=><div key={t.payment_id} className="flex justify-between gap-4 rounded-xl bg-slate-50 p-3 text-xs"><div><b className="text-slate-700">{t.campaign}</b><p className="mt-1 text-slate-400">{new Date(t.created_at).toLocaleDateString()}</p></div><b className="text-[#070a45]">{t.currency} {t.amount.toFixed(2)}</b></div>)}</div>{statement.account.credit_used>0&&<div className="mt-4 space-y-2"><div className="grid gap-2 sm:grid-cols-2"><select className="field" value={settlementMethod} onChange={e=>setSettlementMethod(e.target.value)}><option value="bank_transfer">Bank transfer</option><option value="cash">Cash</option><option value="mobile_money">Mobile money</option><option value="card">Card</option></select><input className="field" value={settlementReference} onChange={e=>setSettlementReference(e.target.value)} placeholder="Payment reference (optional)"/></div><button type="button" onClick={settleAccount} className="primary">Mark full balance settled</button></div>}{lastSettlementId&&<button type="button" onClick={downloadSettlementReceipt} className="mt-2 secondary">Download latest settlement receipt</button>}</div>}
     </section>
    </div>}
   </div>
