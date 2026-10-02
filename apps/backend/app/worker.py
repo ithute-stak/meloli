@@ -8,6 +8,7 @@ from .db import SessionLocal
 from .communications import deliver_pending, enqueue_notification
 from .competition import sync_published_competitions
 from .commercial import expire_subscriptions, generate_monthly_corporate_invoices, process_commercial_alerts
+from .tenant_billing import process_tenant_subscription_lifecycle
 from .meta_service import MetaError, publish_campaign as publish_to_meta
 from .models import Campaign, CampaignStatus, PublicationAttempt, PublicationStatus, SystemSetting, Tenant
 from .security import decrypt_secret
@@ -28,6 +29,7 @@ def run_once() -> int:
         expire_subscriptions(db)
         generate_monthly_corporate_invoices(db)
         process_commercial_alerts(db)
+        process_tenant_subscription_lifecycle(db)
         sync_published_competitions(db, min_age_minutes=max(1, int(os.getenv("COMPETITION_SYNC_MINUTES", "10"))), limit=max(1, int(os.getenv("COMPETITION_SYNC_BATCH_SIZE", "10"))))
         due = list(db.scalars(
             select(Campaign)
@@ -57,6 +59,33 @@ def run_once() -> int:
                 continue
 
             previous = db.scalar(select(func.count(PublicationAttempt.id)).where(PublicationAttempt.campaign_id == campaign.id)) or 0
+            max_attempts = max(1, int(os.getenv("PUBLISH_RETRY_MAX_ATTEMPTS", "5")))
+            retry_delay_minutes = max(1, int(os.getenv("PUBLISH_RETRY_DELAY_MINUTES", "15")))
+            last_attempt = db.scalar(
+                select(PublicationAttempt)
+                .where(PublicationAttempt.campaign_id == campaign.id)
+                .order_by(PublicationAttempt.created_at.desc(), PublicationAttempt.id.desc())
+            )
+            if previous >= max_attempts:
+                if campaign.publishing_retry_exhausted_at is None:
+                    campaign.publishing_retry_exhausted_at = datetime.now(timezone.utc)
+                    enqueue_notification(
+                        db,
+                        campaign.advertiser_id,
+                        "publishing_failed",
+                        "Publishing needs staff attention",
+                        f"{campaign.title} reached the automatic publishing retry limit on {portal_name}. Staff must resolve the Meta configuration or content issue before retrying.",
+                    )
+                    from .models import AuditLog
+                    db.add(AuditLog(actor_user_id=None, action="campaign.publish_retry_exhausted", entity_type="campaign", entity_id=str(campaign.id), detail=f"{previous} attempts"))
+                    db.commit()
+                continue
+            if last_attempt and last_attempt.status == PublicationStatus.FAILED:
+                last_time = last_attempt.updated_at or last_attempt.created_at
+                last_time = last_time.replace(tzinfo=timezone.utc) if last_time.tzinfo is None else last_time
+                if (datetime.now(timezone.utc) - last_time).total_seconds() < retry_delay_minutes * 60:
+                    continue
+
             attempt = PublicationAttempt(
                 campaign_id=campaign.id,
                 attempt_number=int(previous) + 1,
@@ -81,6 +110,7 @@ def run_once() -> int:
                 campaign.facebook_post_url = result.post_url
                 campaign.published_at = datetime.now(timezone.utc)
                 campaign.status = CampaignStatus.PUBLISHED
+                campaign.publishing_retry_exhausted_at = None
                 enqueue_notification(
                     db,
                     campaign.advertiser_id,
