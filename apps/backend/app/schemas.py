@@ -59,12 +59,26 @@ class PackageWrite(BaseModel):
     active: bool = True
 
 
+class CampaignMediaCreate(BaseModel):
+    url: str = Field(min_length=1, max_length=1000)
+    content_type: str = Field(min_length=3, max_length=120)
+
+
+class CampaignMediaOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    url: str
+    content_type: str
+    position: int
+
+
 class CampaignCreate(BaseModel):
     title: str = Field(min_length=3, max_length=160)
     caption: str = Field(min_length=3, max_length=5000)
     package_code: str = Field(min_length=2, max_length=50)
     preferred_publish_at: datetime | None = None
     media_url: str | None = Field(default=None, max_length=1000)
+    media_items: list[CampaignMediaCreate] = Field(default_factory=list, max_length=10)
     destination_url: str | None = Field(default=None, max_length=1000)
 
 
@@ -76,6 +90,7 @@ class CampaignOut(BaseModel):
     title: str
     caption: str
     media_url: str | None
+    media_items: list[CampaignMediaOut] = Field(default_factory=list)
     destination_url: str | None
     preferred_publish_at: datetime | None
     scheduled_publish_at: datetime | None
