@@ -109,6 +109,7 @@ class Campaign(Base):
     package: Mapped[AdvertisingPackage] = relationship(back_populates="campaigns")
     payments: Mapped[list["Payment"]] = relationship(back_populates="campaign")
     publications: Mapped[list["PublicationAttempt"]] = relationship(back_populates="campaign", cascade="all, delete-orphan")
+    media_items: Mapped[list["CampaignMedia"]] = relationship(back_populates="campaign", cascade="all, delete-orphan", order_by="CampaignMedia.position")
 
 
 class Payment(Base):
@@ -365,3 +366,14 @@ class CorporateCreditNote(Base):
     reason: Mapped[str] = mapped_column(Text)
     issued_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CampaignMedia(Base):
+    __tablename__ = "campaign_media"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id"), index=True)
+    url: Mapped[str] = mapped_column(String(1000))
+    content_type: Mapped[str] = mapped_column(String(120))
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    campaign: Mapped[Campaign] = relationship(back_populates="media_items")
