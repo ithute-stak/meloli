@@ -1,0 +1,12 @@
+"use client";
+
+import Link from "next/link";
+import { FormEvent, useState } from "react";
+import { ArrowLeft, CheckCircle2, Loader2, Mail } from "lucide-react";
+import { api } from "@/lib/api";
+
+export default function ForgotPasswordPage(){
+  const [email,setEmail]=useState(""); const [loading,setLoading]=useState(false); const [message,setMessage]=useState(""); const [error,setError]=useState("");
+  async function submit(e:FormEvent){e.preventDefault();setLoading(true);setError("");setMessage("");try{const r=await api<{message:string}>("/api/v1/auth/password-reset/request",{method:"POST",body:JSON.stringify({email})});setMessage(r.message);}catch(err){setError(err instanceof Error?err.message:"Unable to request password reset");}finally{setLoading(false)}}
+  return <main className="grid min-h-screen place-items-center bg-[#f5f6fa] p-5"><div className="w-full max-w-md rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-sm sm:p-8"><Link href="/login" className="inline-flex items-center gap-2 text-sm font-bold text-slate-500"><ArrowLeft size={16}/> Back to sign in</Link><div className="mt-8"><p className="text-xs font-black uppercase tracking-[.18em] text-[#e31545]">Account recovery</p><h1 className="mt-2 text-3xl font-black text-[#070a45]">Reset your password</h1><p className="mt-3 text-sm leading-6 text-slate-500">Enter your account email. If it matches an active Meloli account, we’ll send a one-time reset link.</p></div><form onSubmit={submit} className="mt-7 space-y-4"><label className="block"><span className="mb-2 block text-sm font-bold text-slate-700">Email address</span><div className="flex items-center gap-3 rounded-2xl border border-slate-200 px-4"><Mail size={18} className="text-slate-400"/><input className="h-14 w-full outline-none" type="email" value={email} onChange={e=>setEmail(e.target.value)} required placeholder="you@example.com"/></div></label>{message&&<div className="flex gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-700"><CheckCircle2 size={18} className="mt-0.5 shrink-0"/><span>{message}</span></div>}{error&&<div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-semibold text-rose-700">{error}</div>}<button disabled={loading} className="flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-[#070a45] font-extrabold text-white disabled:opacity-60">{loading&&<Loader2 size={18} className="animate-spin"/>}{loading?"Sending...":"Send reset link"}</button></form></div></main>
+}
