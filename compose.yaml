@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_DB: meloli
       POSTGRES_USER: meloli
-      POSTGRES_PASSWORD: meloli_dev
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-meloli_dev}
     volumes:
       - meloli_db:/var/lib/postgresql/data
     healthcheck:
@@ -16,7 +16,8 @@ services:
   backend:
     build: ./apps/backend
     environment:
-      DATABASE_URL: postgresql+psycopg2://meloli:meloli_dev@db:5432/meloli
+      DATABASE_URL: postgresql+psycopg2://meloli:${POSTGRES_PASSWORD:-meloli_dev}@db:5432/meloli
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-meloli_dev}
       JWT_SECRET: ${JWT_SECRET:-change-this-before-production}
       SETTINGS_ENCRYPTION_KEY: ${SETTINGS_ENCRYPTION_KEY:-change-this-before-production-too}
       SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:-}
@@ -39,12 +40,14 @@ services:
         condition: service_healthy
     ports:
       - "8000:8000"
+    restart: unless-stopped
 
   publisher-worker:
     build: ./apps/backend
     command: ["sh", "-c", "alembic -c alembic.ini upgrade head && python -m app.worker"]
     environment:
-      DATABASE_URL: postgresql+psycopg2://meloli:meloli_dev@db:5432/meloli
+      DATABASE_URL: postgresql+psycopg2://meloli:${POSTGRES_PASSWORD:-meloli_dev}@db:5432/meloli
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-meloli_dev}
       SETTINGS_ENCRYPTION_KEY: ${SETTINGS_ENCRYPTION_KEY:-change-this-before-production-too}
       PUBLIC_BACKEND_URL: ${PUBLIC_BACKEND_URL:-http://localhost:8000}
       MEDIA_ROOT: /data/media
@@ -64,7 +67,7 @@ services:
       PGPORT: 5432
       PGDATABASE: meloli
       PGUSER: meloli
-      PGPASSWORD: meloli_dev
+      PGPASSWORD: ${POSTGRES_PASSWORD:-meloli_dev}
       BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
     volumes:
@@ -113,6 +116,7 @@ services:
       - backend
     ports:
       - "3000:3000"
+    restart: unless-stopped
 
 volumes:
   meloli_db:
