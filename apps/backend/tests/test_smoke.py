@@ -2,6 +2,8 @@ import os
 import shutil
 from pathlib import Path
 
+import pyotp
+
 TEST_DIR = Path(__file__).parent
 TEST_DB = TEST_DIR / "test_meloli.db"
 TEST_MEDIA = TEST_DIR / "test_media"
@@ -211,3 +213,23 @@ def test_advertising_workflow_smoke():
         ops_health = client.get("/api/v1/admin/system-health", headers=auth(admin_token))
         assert ops_health.status_code == 200
         assert ops_health.json()["database"] == "ok"
+
+        two_factor_setup = client.post("/api/v1/profile/2fa/setup", headers=auth(admin_token))
+        assert two_factor_setup.status_code == 200, two_factor_setup.text
+        otp_secret = two_factor_setup.json()["secret"]
+        otp_code = pyotp.TOTP(otp_secret).now()
+        two_factor_enable = client.post("/api/v1/profile/2fa/enable", headers=auth(admin_token), json={"code": otp_code})
+        assert two_factor_enable.status_code == 200, two_factor_enable.text
+        assert two_factor_enable.json()["enabled"] is True
+
+        admin_login_without_otp = client.post(
+            "/api/v1/auth/login",
+            json={"email": "admin@example.com", "password": "StrongTestPassword123!"},
+        )
+        assert admin_login_without_otp.status_code == 401
+
+        admin_login_with_otp = client.post(
+            "/api/v1/auth/login",
+            json={"email": "admin@example.com", "password": "StrongTestPassword123!", "otp_code": pyotp.TOTP(otp_secret).now()},
+        )
+        assert admin_login_with_otp.status_code == 200, admin_login_with_otp.text
