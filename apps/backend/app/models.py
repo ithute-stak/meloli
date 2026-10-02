@@ -146,6 +146,21 @@ class TenantSubscriptionPayment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class MetaWebhookEvent(Base):
+    __tablename__ = "meta_webhook_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id"), nullable=True, index=True)
+    page_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    object_type: Mapped[str] = mapped_column(String(80), default="page")
+    payload_sha256: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    payload_json: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class AutomationJobState(Base):
     __tablename__ = "automation_job_states"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -221,6 +236,9 @@ class Campaign(Base):
     package_id: Mapped[int] = mapped_column(ForeignKey("advertising_packages.id"), index=True)
     title: Mapped[str] = mapped_column(String(160))
     engagement_mode: Mapped[str] = mapped_column(String(50), default="normal", index=True)
+    competition_closes_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    competition_closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    competition_auto_certify: Mapped[bool] = mapped_column(Boolean, default=False)
     caption: Mapped[str] = mapped_column(Text)
     media_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     destination_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
