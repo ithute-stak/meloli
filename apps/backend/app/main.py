@@ -26,6 +26,7 @@ from .models import (
     AuditLog,
     CorporateAccount,
     Campaign,
+    CampaignMedia,
     CampaignStatus,
     Notification,
     Payment,
@@ -303,10 +304,34 @@ def create_campaign(payload: CampaignCreate, user: User = Depends(current_user),
     package = db.scalar(select(AdvertisingPackage).where(AdvertisingPackage.code == payload.package_code.upper(), AdvertisingPackage.active.is_(True)))
     if not package:
         raise HTTPException(status_code=400, detail="Advertising package is unavailable")
-    campaign = Campaign(advertiser_id=user.id, package_id=package.id, title=payload.title, caption=payload.caption, media_url=payload.media_url, destination_url=payload.destination_url, preferred_publish_at=payload.preferred_publish_at, status=CampaignStatus.PAYMENT_PENDING)
+
+    media_items = list(payload.media_items or [])
+    if len(media_items) > 10:
+        raise HTTPException(status_code=400, detail="A campaign can contain at most 10 media items")
+    if len(media_items) > 1 and any(not item.content_type.lower().startswith("image/") for item in media_items):
+        raise HTTPException(status_code=400, detail="Carousel campaigns support images only. Use a single video for video adverts")
+    if len(media_items) == 1 and not (
+        media_items[0].content_type.lower().startswith("image/")
+        or media_items[0].content_type.lower().startswith("video/")
+    ):
+        raise HTTPException(status_code=400, detail="Campaign media must be an image or video")
+
+    primary_media = media_items[0].url if media_items else payload.media_url
+    campaign = Campaign(
+        advertiser_id=user.id,
+        package_id=package.id,
+        title=payload.title,
+        caption=payload.caption,
+        media_url=primary_media,
+        destination_url=payload.destination_url,
+        preferred_publish_at=payload.preferred_publish_at,
+        status=CampaignStatus.PAYMENT_PENDING,
+    )
     db.add(campaign)
     db.flush()
-    audit(db, user, "campaign.created", "campaign", campaign.id, f"Package {package.code}")
+    for position, item in enumerate(media_items):
+        db.add(CampaignMedia(campaign_id=campaign.id, url=item.url, content_type=item.content_type.lower(), position=position))
+    audit(db, user, "campaign.created", "campaign", campaign.id, f"Package {package.code}; media {len(media_items) or (1 if primary_media else 0)}")
     db.commit()
     db.refresh(campaign)
     return campaign
@@ -588,7 +613,15 @@ def publish_campaign(campaign_id: int, publisher: User = Depends(publisher_user)
     db.add(attempt)
     db.flush()
     try:
-        result = publish_to_meta(page_id=page_id, access_token=token, version=version, message=campaign.caption, media_url=campaign.media_url, destination_url=campaign.destination_url)
+        result = publish_to_meta(
+            page_id=page_id,
+            access_token=token,
+            version=version,
+            message=campaign.caption,
+            media_url=campaign.media_url,
+            destination_url=campaign.destination_url,
+            media_items=[(item.url, item.content_type) for item in campaign.media_items],
+        )
         attempt.status = PublicationStatus.PUBLISHED
         attempt.external_post_id = result.post_id
         attempt.external_post_url = result.post_url
