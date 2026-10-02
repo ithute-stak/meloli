@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from .db import get_db
 from .meta_service import MetaError, fetch_post_performance
-from .models import Campaign, CampaignPerformance, CampaignStatus, User, UserRole
+from .models import Campaign, CampaignPerformance, CampaignPerformanceSnapshot, CampaignStatus, User, UserRole
 from .security import decode_access_token, decrypt_secret
 
 router = APIRouter()
@@ -136,6 +136,18 @@ def _sync_one(db: Session, campaign: Campaign, token: str, version: str) -> Camp
     row.shares = result.shares
     row.video_views = result.video_views
     row.synced_at = datetime.now(timezone.utc)
+    db.add(CampaignPerformanceSnapshot(
+        campaign_id=campaign.id,
+        impressions=result.impressions,
+        reach=result.reach,
+        engaged_users=result.engaged_users,
+        clicks=result.clicks,
+        reactions=result.reactions,
+        comments=result.comments,
+        shares=result.shares,
+        video_views=result.video_views,
+        captured_at=row.synced_at,
+    ))
     return row
 
 
