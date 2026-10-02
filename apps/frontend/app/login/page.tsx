@@ -19,7 +19,7 @@ export default function LoginPage(){
     try{
       const auth=await api<AuthResponse>("/api/v1/auth/login",{method:"POST",body:JSON.stringify({email,password,otp_code:otpCode||null})});
       saveSession(auth);
-      router.push(auth.user.role==="advertiser"?"/advertiser":"/dashboard");
+      router.push(auth.user.is_tenant_admin?"/dashboard":auth.user.role==="advertiser"?"/advertiser":"/dashboard");
     }catch(err){setError(err instanceof Error?err.message:"Unable to sign in");}
     finally{setLoading(false);}
   }
