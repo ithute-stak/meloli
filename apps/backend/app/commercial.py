@@ -13,7 +13,7 @@ from reportlab.pdfgen import canvas
 
 from .branding import LIGHT, MUTED, NAVY, RED, draw_footer, draw_header, info_label
 from .db import get_db
-from .models import AdvertiserSubscription, AdvertisingPackage, AuditLog, Campaign, CorporateAccount, CorporateSettlement, Payment, PaymentStatus, PromoCode, SubscriptionPlan, User, UserRole
+from .models import AdvertiserSubscription, AdvertisingPackage, AuditLog, Campaign, CorporateAccount, CorporateSettlement, Notification, Payment, PaymentStatus, PromoCode, SubscriptionPlan, User, UserRole
 from .security import decode_access_token
 
 router = APIRouter()
@@ -481,3 +481,240 @@ def promo_performance(_: User = Depends(super_admin), db: Session = Depends(get_
         })
     return result
 
+
+
+
+def _corporate_due_status(account: CorporateAccount, now: datetime | None = None) -> dict:
+    now = now or datetime.now(timezone.utc)
+    used = float(account.credit_used or 0)
+    limit = float(account.credit_limit or 0)
+    utilization = (used / limit * 100) if limit > 0 else 0.0
+    overdue = bool(used > 0 and now.day > int(account.billing_cycle_day or 28))
+    return {
+        "outstanding": used,
+        "available": max(0.0, limit - used),
+        "utilization_percent": round(utilization, 1),
+        "overdue": overdue,
+        "low_credit": bool(limit > 0 and utilization >= 80),
+    }
+
+
+@router.get("/api/v1/admin/receivables/summary")
+def receivables_summary(_: User = Depends(super_admin), db: Session = Depends(get_db)):
+    accounts = list(db.scalars(select(CorporateAccount).where(CorporateAccount.active.is_(True))))
+    rows = []
+    outstanding_total = 0.0
+    overdue_total = 0.0
+    for account in accounts:
+        user = db.get(User, account.user_id)
+        status_info = _corporate_due_status(account)
+        outstanding_total += status_info["outstanding"]
+        if status_info["overdue"]:
+            overdue_total += status_info["outstanding"]
+        rows.append({
+            "user_id": account.user_id,
+            "advertiser": (user.business_name or user.full_name) if user else f"User #{account.user_id}",
+            "email": user.email if user else None,
+            "credit_limit": float(account.credit_limit),
+            "billing_cycle_day": account.billing_cycle_day,
+            **status_info,
+        })
+    rows.sort(key=lambda row: (not row["overdue"], -row["outstanding"]))
+    return {
+        "accounts": len(accounts),
+        "outstanding_total": round(outstanding_total, 2),
+        "overdue_total": round(overdue_total, 2),
+        "overdue_accounts": sum(1 for row in rows if row["overdue"]),
+        "low_credit_accounts": sum(1 for row in rows if row["low_credit"]),
+        "rows": rows,
+    }
+
+
+@router.get("/api/v1/admin/advertisers/{user_id}/corporate/invoice.pdf")
+def corporate_invoice_pdf(user_id: int, _: User = Depends(super_admin), db: Session = Depends(get_db)):
+    user = db.get(User, user_id)
+    account = db.scalar(select(CorporateAccount).where(CorporateAccount.user_id == user_id))
+    if not user or not account:
+        raise HTTPException(status_code=404, detail="Corporate account not found")
+    status_info = _corporate_due_status(account)
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    document_no = f"CORP-INV-MEL-{account.id:06d}-{datetime.now(timezone.utc).strftime('%Y%m')}"
+    pdf.setTitle(f"Meloli corporate invoice {document_no}")
+    draw_header(pdf, db, "Corporate invoice", document_no, "OVERDUE" if status_info["overdue"] else "PAYMENT DUE")
+
+    top = height - 154
+    pdf.setFillColor(LIGHT)
+    pdf.roundRect(46, top - 92, width - 92, 92, 14, fill=1, stroke=0)
+    info_label(pdf, 62, top - 22, "Bill to", user.business_name or user.full_name)
+    info_label(pdf, 62, top - 58, "Email", user.email)
+    info_label(pdf, 305, top - 22, "Billing cycle", f"Day {account.billing_cycle_day}")
+    info_label(pdf, 305, top - 58, "Invoice date", datetime.now(timezone.utc).strftime("%d %b %Y"))
+
+    y = top - 130
+    pdf.setFillColor(NAVY)
+    pdf.roundRect(46, y - 24, width - 92, 24, 8, fill=1, stroke=0)
+    pdf.setFillColor(colors.white)
+    pdf.setFont("Helvetica-Bold", 8)
+    pdf.drawString(58, y - 16, "DESCRIPTION")
+    pdf.drawRightString(width - 58, y - 16, "AMOUNT")
+    y -= 50
+    pdf.setFillColor(NAVY)
+    pdf.setFont("Helvetica-Bold", 10)
+    pdf.drawString(58, y, "Corporate advertising credit used")
+    pdf.drawRightString(width - 58, y, f"LSL {status_info['outstanding']:,.2f}")
+    pdf.setFillColor(MUTED)
+    pdf.setFont("Helvetica", 8.5)
+    pdf.drawString(58, y - 16, "Advertising services charged to the approved Meloli corporate credit account.")
+    pdf.setStrokeColor(colors.HexColor("#EEF0F5"))
+    pdf.line(46, y - 30, width - 46, y - 30)
+
+    total_y = y - 76
+    pdf.setFillColor(MUTED)
+    pdf.setFont("Helvetica", 9)
+    pdf.drawRightString(width - 170, total_y, "Amount due")
+    pdf.setFillColor(RED)
+    pdf.setFont("Helvetica-Bold", 20)
+    pdf.drawRightString(width - 58, total_y - 4, f"LSL {status_info['outstanding']:,.2f}")
+
+    pdf.setFillColor(colors.HexColor("#FFF1F4" if status_info["overdue"] else "#F5F6FA"))
+    pdf.roundRect(46, 112, width - 92, 64, 12, fill=1, stroke=0)
+    pdf.setFillColor(RED if status_info["overdue"] else NAVY)
+    pdf.setFont("Helvetica-Bold", 8)
+    pdf.drawString(60, 154, "PAYMENT STATUS")
+    pdf.setFillColor(NAVY)
+    pdf.setFont("Helvetica", 8.5)
+    note = (
+        f"This account is past its billing cycle day ({account.billing_cycle_day}). Please settle the outstanding balance."
+        if status_info["overdue"] else
+        f"Please settle the outstanding balance by the account billing cycle day ({account.billing_cycle_day})."
+    )
+    pdf.drawString(60, 136, note[:96])
+    pdf.drawString(60, 120, "Use the corporate advertiser name and invoice number as the payment reference.")
+
+    draw_footer(pdf)
+    pdf.save()
+    return Response(
+        buffer.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="meloli-corporate-invoice-{user_id}.pdf"'},
+    )
+
+
+@router.get("/api/v1/admin/corporate-settlements/{settlement_id}/receipt.pdf")
+def corporate_settlement_receipt(settlement_id: int, _: User = Depends(super_admin), db: Session = Depends(get_db)):
+    settlement = db.get(CorporateSettlement, settlement_id)
+    if not settlement:
+        raise HTTPException(status_code=404, detail="Corporate settlement not found")
+    account = db.get(CorporateAccount, settlement.corporate_account_id)
+    user = db.get(User, account.user_id) if account else None
+    if not account or not user:
+        raise HTTPException(status_code=409, detail="Settlement account data is incomplete")
+
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    document_no = f"CORP-RCT-MEL-{settlement.id:06d}"
+    pdf.setTitle(f"Meloli corporate receipt {document_no}")
+    draw_header(pdf, db, "Corporate receipt", document_no, "PAID")
+    top = height - 154
+    pdf.setFillColor(LIGHT)
+    pdf.roundRect(46, top - 92, width - 92, 92, 14, fill=1, stroke=0)
+    info_label(pdf, 62, top - 22, "Received from", user.business_name or user.full_name)
+    info_label(pdf, 62, top - 58, "Email", user.email)
+    info_label(pdf, 305, top - 22, "Payment method", settlement.method.replace("_", " ").title())
+    info_label(pdf, 305, top - 58, "Reference", settlement.reference or "—", 40)
+
+    y = top - 134
+    pdf.setFillColor(NAVY)
+    pdf.roundRect(46, y - 76, width - 92, 76, 14, fill=1, stroke=0)
+    pdf.setFillColor(colors.white)
+    pdf.setFont("Helvetica-Bold", 8)
+    pdf.drawString(62, y - 25, "AMOUNT RECEIVED")
+    pdf.setFont("Helvetica-Bold", 24)
+    pdf.drawRightString(width - 62, y - 34, f"LSL {float(settlement.amount):,.2f}")
+    pdf.setFillColor(colors.HexColor("#C7CBDC"))
+    pdf.setFont("Helvetica", 8)
+    settled_at = as_utc(settlement.settled_at) or datetime.now(timezone.utc)
+    pdf.drawString(62, y - 55, f"Recorded {settled_at.strftime('%d %b %Y, %H:%M UTC')}")
+
+    pdf.setFillColor(colors.HexColor("#ECFDF5"))
+    pdf.roundRect(46, 112, width - 92, 48, 12, fill=1, stroke=0)
+    pdf.setFillColor(colors.HexColor("#15803D"))
+    pdf.setFont("Helvetica-Bold", 8)
+    pdf.drawString(60, 142, "CORPORATE PAYMENT CONFIRMED")
+    pdf.setFillColor(NAVY)
+    pdf.setFont("Helvetica", 8)
+    pdf.drawString(60, 126, "This receipt confirms settlement against the Meloli corporate advertising credit account.")
+
+    draw_footer(pdf)
+    pdf.save()
+    return Response(
+        buffer.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="meloli-corporate-receipt-{settlement.id}.pdf"'},
+    )
+
+
+def process_commercial_alerts(db: Session) -> dict[str, int]:
+    from .communications import enqueue_notification
+
+    now = datetime.now(timezone.utc)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    sent = {"renewal": 0, "low_posts": 0, "low_credit": 0, "overdue": 0}
+
+    def notify_once(user_id: int, kind: str, title: str, message: str) -> bool:
+        exists = db.scalar(
+            select(Notification.id).where(
+                Notification.user_id == user_id,
+                Notification.kind == kind,
+                Notification.created_at >= day_start,
+            ).limit(1)
+        )
+        if exists:
+            return False
+        enqueue_notification(db, user_id, kind, title, message)
+        return True
+
+    subscriptions = list(db.scalars(select(AdvertiserSubscription).where(AdvertiserSubscription.active.is_(True))))
+    for sub in subscriptions:
+        end = as_utc(sub.period_end)
+        if end:
+            days_left = (end.date() - now.date()).days
+            if 0 <= days_left <= 5 and notify_once(
+                sub.user_id,
+                "subscription_renewal",
+                "Advertising plan renewal due soon",
+                f"Your Meloli advertising plan expires in {days_left} day{'s' if days_left != 1 else ''}. Renew it to keep your advertising allocation active.",
+            ):
+                sent["renewal"] += 1
+        if sub.remaining_posts <= 2 and notify_once(
+            sub.user_id,
+            "subscription_low_posts",
+            "Advertising allocation running low",
+            f"You have {sub.remaining_posts} advertising post{'s' if sub.remaining_posts != 1 else ''} remaining on your current Meloli plan.",
+        ):
+            sent["low_posts"] += 1
+
+    accounts = list(db.scalars(select(CorporateAccount).where(CorporateAccount.active.is_(True))))
+    for account in accounts:
+        status_info = _corporate_due_status(account, now)
+        if status_info["low_credit"] and notify_once(
+            account.user_id,
+            "corporate_low_credit",
+            "Corporate credit running low",
+            f"Your Meloli corporate account has used {status_info['utilization_percent']:.0f}% of its approved credit limit.",
+        ):
+            sent["low_credit"] += 1
+        if status_info["overdue"] and notify_once(
+            account.user_id,
+            "corporate_overdue",
+            "Corporate advertising balance overdue",
+            f"Your corporate advertising account has an outstanding balance of LSL {status_info['outstanding']:,.2f} after billing day {account.billing_cycle_day}.",
+        ):
+            sent["overdue"] += 1
+
+    if any(sent.values()):
+        db.commit()
+    return sent
