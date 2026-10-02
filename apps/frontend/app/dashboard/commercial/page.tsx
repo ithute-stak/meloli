@@ -4,7 +4,7 @@ import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, BadgePercent, Building2, CalendarRange, Loader2 } from "lucide-react";
-import { api, getSessionUser } from "@/lib/api";
+import { API_URL, api, getSessionUser, getToken } from "@/lib/api";
 
 type Promo={id:number;code:string;percent_off:number;fixed_off:number;uses:number;max_uses?:number|null;active:boolean};
 type Plan={id:number;code:string;name:string;monthly_price:number;included_posts:number;active:boolean};
@@ -62,6 +62,7 @@ export default function CommercialPage(){
  async function renewSubscription(id:number){setError("");try{await api("/api/v1/admin/subscriptions/"+id+"/renew",{method:"POST",body:JSON.stringify({months:1})},true);setMessage("Subscription renewed for one month.");await load();}catch(e){setError(e instanceof Error?e.message:"Unable to renew subscription")}}
  async function loadStatement(){if(!advertiserId)return;setError("");try{setStatement(await api<Statement>("/api/v1/admin/advertisers/"+advertiserId+"/corporate/statement",{},true));}catch(e){setStatement(null);setError(e instanceof Error?e.message:"Unable to load corporate statement")}}
  async function settleAccount(){if(!advertiserId)return;setError("");try{await api("/api/v1/admin/advertisers/"+advertiserId+"/corporate/settle",{method:"POST",body:JSON.stringify({amount:null})},true);setMessage("Corporate balance settled.");await loadStatement();}catch(e){setError(e instanceof Error?e.message:"Unable to settle corporate balance")}}
+ async function downloadStatement(){if(!advertiserId)return;setError("");try{const token=getToken();const response=await fetch(API_URL+"/api/v1/admin/advertisers/"+advertiserId+"/corporate/statement.pdf",{headers:token?{Authorization:"Bearer "+token}:{}});if(!response.ok)throw new Error("Unable to generate statement PDF");const blob=await response.blob();const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="meloli-corporate-statement-"+advertiserId+".pdf";a.click();URL.revokeObjectURL(url);}catch(e){setError(e instanceof Error?e.message:"Unable to download statement")}}
 
  return <main className="min-h-screen bg-[#f5f6fa] text-slate-900">
   <header className="border-b border-slate-200 bg-white"><div className="mx-auto flex h-20 max-w-[1500px] items-center gap-4 px-4 sm:px-6"><Link href="/dashboard" className="grid h-10 w-10 place-items-center rounded-xl border border-slate-200"><ArrowLeft size={18}/></Link><div><h1 className="font-black text-[#070a45]">Commercial Growth</h1><p className="text-xs text-slate-500">Promotions, corporate credit and monthly advertising plans.</p></div></div></header>
@@ -80,7 +81,7 @@ export default function CommercialPage(){
     </section>
     <section className="rounded-[1.6rem] border border-slate-200 bg-white p-5">
       <Header icon={<Building2/>} title="Corporate statement" text="Review credit usage for the selected advertiser and clear the balance when payment is received."/>
-      <div className="mt-5 flex gap-2"><button type="button" onClick={loadStatement} className="secondary">Load statement</button></div>
+      <div className="mt-5 grid gap-2 sm:grid-cols-2"><button type="button" onClick={loadStatement} className="secondary">Load statement</button><button type="button" onClick={downloadStatement} className="primary">Download PDF</button></div>
       {statement&&<div className="mt-4"><div className="grid grid-cols-3 gap-2"><Mini label="Limit" value={"LSL "+statement.account.credit_limit.toFixed(2)}/><Mini label="Used" value={"LSL "+statement.account.credit_used.toFixed(2)}/><Mini label="Available" value={"LSL "+statement.account.available_credit.toFixed(2)}/></div><div className="mt-4 max-h-56 space-y-2 overflow-auto">{statement.transactions.length===0?<p className="text-xs text-slate-500">No corporate-credit transactions.</p>:statement.transactions.map(t=><div key={t.payment_id} className="flex justify-between gap-4 rounded-xl bg-slate-50 p-3 text-xs"><div><b className="text-slate-700">{t.campaign}</b><p className="mt-1 text-slate-400">{new Date(t.created_at).toLocaleDateString()}</p></div><b className="text-[#070a45]">{t.currency} {t.amount.toFixed(2)}</b></div>)}</div>{statement.account.credit_used>0&&<button type="button" onClick={settleAccount} className="mt-4 primary">Mark full balance settled</button>}</div>}
     </section>
    </div>}
