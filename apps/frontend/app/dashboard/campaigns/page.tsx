@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, CalendarDays, CheckCircle2, Clock3, Loader2, Megaphone, Search, Send, XCircle } from "lucide-react";
 import { API_URL, api, getSessionUser, SessionUser } from "@/lib/api";
+import { useRealtimeTopics } from "@/app/components/RealtimeBridge";
 
 type MediaItem={id:number;url:string;content_type:string;position:number};
 type Campaign = {
@@ -41,6 +42,7 @@ export default function CampaignsPage(){
   }
 
   useEffect(()=>{const current=getSessionUser();if(!current||(current.role==="advertiser"&&!current.is_tenant_admin)){router.replace("/login");return;}setUser(current);load();},[router]);
+  useRealtimeTopics(["campaign","payment","notification"],()=>{load()});
   const filtered=useMemo(()=>items.filter(x=>x.title.toLowerCase().includes(query.toLowerCase())||x.caption.toLowerCase().includes(query.toLowerCase())),[items,query]);
   const checklistComplete=checklist.content_accuracy_checked&&checklist.media_rights_checked&&checklist.contact_details_checked&&checklist.policy_checked;
   async function loadChecklist(id:number){try{setChecklist(await api<ReviewChecklist>("/api/v1/campaigns/"+id+"/review-checklist",{},true));}catch{setChecklist({...emptyChecklist,campaign_id:id});}}
