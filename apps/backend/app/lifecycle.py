@@ -72,7 +72,7 @@ def request_password_reset(payload: ResetRequest, db: Session = Depends(get_db))
                 db,
                 user.email,
                 "Reset your Meloli Airwaves password",
-                f"Hello {user.full_name},\n\nUse the link below to reset your Meloli Advertising Portal password. This link expires in 45 minutes and can only be used once.\n\n{base}/reset-password?token={raw}\n\nIf you did not request this, you can ignore this email.\n\nMeloli Airwaves Advertising Portal",
+                f"Hello {user.full_name},\n\nUse the link below to reset your Meloli Advertising Portal password. This link expires in 45 minutes and can only be used once.\n\n{base}/forgot-password?token={raw}\n\nIf you did not request this, you can ignore this email.\n\nMeloli Airwaves Advertising Portal",
             )
         except Exception:
             # Keep the public response non-enumerating; delivery failures are visible in server operations.
