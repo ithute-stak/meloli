@@ -182,6 +182,7 @@ def tenant_admin_profile(admin: User = Depends(tenant_admin), db: Session = Depe
     domains = list(db.scalars(select(TenantDomain).where(TenantDomain.tenant_id == admin.tenant_id).order_by(TenantDomain.created_at.desc())))
     return {
         **tenant_payload(tenant),
+        "portal_cname_target": os.getenv("PORTAL_CNAME_TARGET", "portal.example.com"),
         "domains": [{
             "id": row.id,
             "hostname": row.hostname,
