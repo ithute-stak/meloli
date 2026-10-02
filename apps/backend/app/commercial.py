@@ -134,6 +134,9 @@ def my_commercial_account(user: User = Depends(current_user), db: Session = Depe
             "credit_used": float(corporate.credit_used),
             "available_credit": max(0, float(corporate.credit_limit) - float(corporate.credit_used)),
             "billing_cycle_day": corporate.billing_cycle_day,
+            "utilization_percent": round((float(corporate.credit_used) / float(corporate.credit_limit) * 100), 1) if float(corporate.credit_limit) > 0 else 0,
+            "low_credit": bool(float(corporate.credit_limit) > 0 and float(corporate.credit_used) / float(corporate.credit_limit) >= 0.8),
+            "overdue": bool(float(corporate.credit_used) > 0 and datetime.now(timezone.utc).day > int(corporate.billing_cycle_day or 28)),
         },
         "subscription": None if not subscription else {
             "id": subscription.id,
@@ -497,6 +500,20 @@ def _corporate_due_status(account: CorporateAccount, now: datetime | None = None
         "overdue": overdue,
         "low_credit": bool(limit > 0 and utilization >= 80),
     }
+
+
+@router.get("/api/v1/commercial/my-corporate/statement.pdf")
+def my_corporate_statement_pdf(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if user.role != UserRole.ADVERTISER:
+        raise HTTPException(status_code=403, detail="Advertiser account required")
+    return corporate_statement_pdf(user.id, user, db)
+
+
+@router.get("/api/v1/commercial/my-corporate/invoice.pdf")
+def my_corporate_invoice_pdf(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if user.role != UserRole.ADVERTISER:
+        raise HTTPException(status_code=403, detail="Advertiser account required")
+    return corporate_invoice_pdf(user.id, user, db)
 
 
 @router.get("/api/v1/admin/receivables/summary")
