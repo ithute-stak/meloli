@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from .branding import BORDER, LIGHT, MUTED, NAVY, RED, draw_footer, draw_header, info_label
 from .db import get_db
-from .models import AdvertisingPackage, AuditLog, Campaign, CampaignStatus, NotificationDelivery, Payment, PaymentStatus, PublicationAttempt, PublicationStatus, User, UserRole
+from .models import AdvertisingPackage, AuditLog, Campaign, CampaignStatus, NotificationDelivery, Payment, PaymentStatus, PublicationAttempt, PublicationStatus, SystemSetting, User, UserRole
 from .security import validate_token_user, hash_password
 
 router = APIRouter()
@@ -222,6 +222,57 @@ def sla_summary(_: User = Depends(staff), db: Session = Depends(get_db)):
         "total_attention": len(rows) + int(failed_notifications),
         "rows": rows[:200],
         "checked_at": now,
+    }
+
+
+@router.get("/api/v1/admin/production-readiness")
+def production_readiness(_: User = Depends(super_admin), db: Session = Depends(get_db)):
+    def setting(key: str) -> str | None:
+        row = db.scalar(select(SystemSetting).where(SystemSetting.key == key))
+        return row.value if row and not row.encrypted else ("configured" if row and row.value else None)
+
+    checks = []
+    def add(key: str, label: str, ok: bool, detail: str, severity: str = "critical"):
+        checks.append({"key": key, "label": label, "ok": bool(ok), "detail": detail, "severity": severity})
+
+    jwt = os.getenv("JWT_SECRET", "")
+    encryption = os.getenv("SETTINGS_ENCRYPTION_KEY", "")
+    super_password = os.getenv("SUPER_ADMIN_PASSWORD", "")
+    cors = os.getenv("CORS_ORIGINS", "")
+    public_backend = os.getenv("PUBLIC_BACKEND_URL", "")
+    frontend_public = os.getenv("FRONTEND_PUBLIC_URL", "")
+
+    add("jwt_secret", "JWT signing secret", len(jwt) >= 32 and "change-this" not in jwt.lower(), "Use an independent random JWT_SECRET of at least 32 characters.")
+    add("settings_key", "Settings encryption key", len(encryption) >= 32 and "change-this" not in encryption.lower(), "Use an independent random SETTINGS_ENCRYPTION_KEY of at least 32 characters.")
+    add("super_admin_password", "Super Admin bootstrap password", len(super_password) >= 12 and "change" not in super_password.lower(), "Set a strong deployment secret; do not use a repository/default password.")
+    add("cors", "Production CORS origins", bool(cors) and "*" not in cors and "localhost" not in cors, f"Configured origins: {cors or 'not set'}")
+    add("backend_https", "Public backend HTTPS", public_backend.startswith("https://"), public_backend or "PUBLIC_BACKEND_URL is not set")
+    add("frontend_https", "Public frontend HTTPS", frontend_public.startswith("https://"), frontend_public or "FRONTEND_PUBLIC_URL is not set")
+    add("meta", "Meta Page integration", setting("meta.connected") == "true", "Meta connection must pass Test connection in System Configuration.")
+    email_enabled = setting("notifications.email_enabled") == "true"
+    smtp_ready = bool(setting("notifications.smtp_host") and setting("notifications.from_email"))
+    add("email", "Advertiser email delivery", email_enabled and smtp_ready, "Enable SMTP and configure host/from address for recovery, invoices and notifications.", "warning")
+
+    backup_root = os.getenv("BACKUP_ROOT", "/data/backups")
+    max_age = max(1, int(os.getenv("BACKUP_MAX_AGE_HOURS", "30")))
+    backup_age = None
+    try:
+        freshness = os.path.join(backup_root, "last-success")
+        if os.path.isfile(freshness):
+            modified = datetime.fromtimestamp(os.path.getmtime(freshness), tz=timezone.utc)
+            backup_age = round((datetime.now(timezone.utc) - modified).total_seconds() / 3600, 1)
+    except OSError:
+        pass
+    add("backup", "Verified database/media backup", backup_age is not None and backup_age <= max_age, f"Latest verified backup age: {backup_age if backup_age is not None else 'none'} hours; maximum {max_age} hours.")
+
+    critical_failed = [item for item in checks if item["severity"] == "critical" and not item["ok"]]
+    warning_failed = [item for item in checks if item["severity"] == "warning" and not item["ok"]]
+    return {
+        "ready": len(critical_failed) == 0,
+        "critical_failures": len(critical_failed),
+        "warnings": len(warning_failed),
+        "checks": checks,
+        "checked_at": datetime.now(timezone.utc),
     }
 
 
