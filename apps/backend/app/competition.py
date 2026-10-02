@@ -5,7 +5,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .db import get_db
@@ -240,6 +240,43 @@ def _result_payload(db: Session, campaign: Campaign) -> dict:
         } for row in comments],
         "disqualified_people": sorted(disqualified, key=lambda row: (row["user_name"] or row["user_id"])),
     }
+
+
+def sync_published_competitions(db: Session, min_age_minutes: int = 10, limit: int = 10) -> int:
+    cutoff = datetime.now(timezone.utc).timestamp() - max(1, min_age_minutes) * 60
+    campaigns = list(db.scalars(
+        select(Campaign)
+        .where(
+            Campaign.engagement_mode == "competition_one_comment",
+            Campaign.facebook_post_id.is_not(None),
+            Campaign.cancelled_at.is_(None),
+        )
+        .order_by(Campaign.updated_at.desc())
+        .limit(limit)
+    ))
+    synced = 0
+    for campaign in campaigns:
+        latest = db.scalar(
+            select(func.max(CompetitionComment.synced_at))
+            .where(CompetitionComment.campaign_id == campaign.id)
+        )
+        latest_ts = None
+        if latest:
+            latest = latest.replace(tzinfo=timezone.utc) if latest.tzinfo is None else latest
+            latest_ts = latest.timestamp()
+        if latest_ts is not None and latest_ts > cutoff:
+            continue
+        try:
+            comments = _fetch_facebook_comments(campaign, db)
+            _replace_results(db, campaign, comments)
+            db.add(AuditLog(actor_user_id=None, action="competition.auto_synced", entity_type="campaign", entity_id=str(campaign.id), detail=f"{len(comments)} comments"))
+            db.commit()
+            synced += 1
+        except Exception as exc:
+            db.rollback()
+            db.add(AuditLog(actor_user_id=None, action="competition.auto_sync_failed", entity_type="campaign", entity_id=str(campaign.id), detail=str(exc)[:1000]))
+            db.commit()
+    return synced
 
 
 @router.post("/api/v1/campaigns/{campaign_id}/competition/sync")
