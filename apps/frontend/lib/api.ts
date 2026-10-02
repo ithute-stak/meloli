@@ -22,6 +22,7 @@ const USER_KEY = "meloli_session_user";
 export function saveSession(auth: AuthResponse) {
   localStorage.setItem(TOKEN_KEY, auth.access_token);
   localStorage.setItem(USER_KEY, JSON.stringify(auth.user));
+  window.dispatchEvent(new Event("meloli:session"));
 }
 
 export function updateSessionUser(user: SessionUser) {
@@ -31,6 +32,10 @@ export function updateSessionUser(user: SessionUser) {
 export function clearSession() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
+  if (typeof window !== "undefined") {
+    sessionStorage.removeItem("meloli_realtime_last_event_id");
+    window.dispatchEvent(new Event("meloli:session"));
+  }
 }
 
 export function getToken() {
