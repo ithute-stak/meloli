@@ -235,6 +235,28 @@ def system_health(_: User = Depends(staff), db: Session = Depends(get_db)):
         total_bytes = stat.f_frsize * stat.f_blocks
     except OSError:
         free_bytes = total_bytes = 0
+    backup_root = os.getenv("BACKUP_ROOT", "/data/backups")
+    backup_max_age_hours = max(1, int(os.getenv("BACKUP_MAX_AGE_HOURS", "30")))
+    backup_last_success = None
+    backup_age_hours = None
+    backup_stale = True
+    latest_db_backup = None
+    latest_media_backup = None
+    try:
+        backup_files = [os.path.join(backup_root, name) for name in os.listdir(backup_root) if os.path.isfile(os.path.join(backup_root, name))]
+        db_files = [path for path in backup_files if os.path.basename(path).startswith("db-") and path.endswith(".dump")]
+        media_files = [path for path in backup_files if os.path.basename(path).startswith("media-") and path.endswith(".tar.gz")]
+        latest_db_backup = max(db_files, key=os.path.getmtime) if db_files else None
+        latest_media_backup = max(media_files, key=os.path.getmtime) if media_files else None
+        freshness_path = os.path.join(backup_root, "last-success")
+        if os.path.isfile(freshness_path):
+            modified = datetime.fromtimestamp(os.path.getmtime(freshness_path), tz=timezone.utc)
+            backup_last_success = modified
+            backup_age_hours = round((datetime.now(timezone.utc) - modified).total_seconds() / 3600, 1)
+            backup_stale = backup_age_hours > backup_max_age_hours
+    except OSError:
+        pass
+
     failed = db.scalar(select(func.count(PublicationAttempt.id)).where(PublicationAttempt.status == PublicationStatus.FAILED)) or 0
     due = db.scalar(select(func.count(Campaign.id)).where(Campaign.status == CampaignStatus.SCHEDULED, Campaign.scheduled_publish_at <= datetime.now(timezone.utc))) or 0
     last_publish = db.scalar(select(func.max(Campaign.published_at)).where(Campaign.status == CampaignStatus.PUBLISHED))
@@ -248,6 +270,15 @@ def system_health(_: User = Depends(staff), db: Session = Depends(get_db)):
         "due_scheduled_campaigns": int(due),
         "last_published_at": last_publish,
         "worker_expected": os.getenv("PUBLISHER_WORKER_ENABLED", "true").lower() == "true",
+        "backup_root": backup_root,
+        "backup_last_success": backup_last_success,
+        "backup_age_hours": backup_age_hours,
+        "backup_max_age_hours": backup_max_age_hours,
+        "backup_stale": backup_stale,
+        "latest_db_backup": os.path.basename(latest_db_backup) if latest_db_backup else None,
+        "latest_db_backup_bytes": os.path.getsize(latest_db_backup) if latest_db_backup else 0,
+        "latest_media_backup": os.path.basename(latest_media_backup) if latest_media_backup else None,
+        "latest_media_backup_bytes": os.path.getsize(latest_media_backup) if latest_media_backup else 0,
         "checked_at": datetime.now(timezone.utc),
     }
 
