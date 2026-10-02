@@ -13,7 +13,7 @@ from reportlab.pdfgen import canvas
 
 from .branding import LIGHT, MUTED, NAVY, RED, draw_footer, draw_header, info_label
 from .db import get_db
-from .models import AdvertiserSubscription, AdvertisingPackage, AuditLog, Campaign, CorporateAccount, CorporateSettlement, Notification, Payment, PaymentStatus, PromoCode, SubscriptionPlan, User, UserRole
+from .models import AdvertiserSubscription, AdvertisingPackage, AuditLog, Campaign, CorporateAccount, CorporateInvoice, CorporateSettlement, Notification, Payment, PaymentStatus, PromoCode, SubscriptionPlan, User, UserRole
 from .security import decode_access_token
 
 router = APIRouter()
@@ -410,6 +410,31 @@ def settle_corporate(user_id: int, payload: CorporateSettlementWrite, admin: Use
     if amount > current:
         raise HTTPException(status_code=400, detail="Settlement cannot exceed the outstanding corporate balance")
     account.credit_used = max(Decimal("0.00"), current - amount)
+
+    remaining = amount
+    invoices = list(db.scalars(
+        select(CorporateInvoice)
+        .where(
+            CorporateInvoice.corporate_account_id == account.id,
+            CorporateInvoice.status.in_(["issued", "partial", "overdue"]),
+        )
+        .order_by(CorporateInvoice.due_at, CorporateInvoice.issued_at)
+    ))
+    for invoice in invoices:
+        if remaining <= 0:
+            break
+        balance = Decimal(str(invoice.amount or 0)) - Decimal(str(invoice.amount_paid or 0))
+        if balance <= 0:
+            continue
+        applied = min(balance, remaining)
+        invoice.amount_paid = Decimal(str(invoice.amount_paid or 0)) + applied
+        remaining -= applied
+        if Decimal(str(invoice.amount_paid)) >= Decimal(str(invoice.amount)):
+            invoice.status = "paid"
+            invoice.paid_at = datetime.now(timezone.utc)
+        else:
+            invoice.status = "partial"
+
     settlement = CorporateSettlement(
         corporate_account_id=account.id,
         amount=amount,
@@ -430,6 +455,203 @@ def settle_corporate(user_id: int, payload: CorporateSettlementWrite, admin: Use
         "credit_used": float(account.credit_used),
         "available_credit": max(0, float(account.credit_limit) - float(account.credit_used)),
     }
+
+
+def generate_monthly_corporate_invoices(db: Session) -> int:
+    now = datetime.now(timezone.utc)
+    period_key = now.strftime("%Y-%m")
+    created = 0
+    accounts = list(db.scalars(select(CorporateAccount).where(CorporateAccount.active.is_(True))))
+    for account in accounts:
+        if now.day < int(account.billing_cycle_day or 28):
+            continue
+        outstanding = Decimal(str(account.credit_used or 0))
+        if outstanding <= 0:
+            continue
+        existing = db.scalar(
+            select(CorporateInvoice.id).where(
+                CorporateInvoice.corporate_account_id == account.id,
+                CorporateInvoice.period_key == period_key,
+            ).limit(1)
+        )
+        if existing:
+            continue
+        invoice = CorporateInvoice(
+            corporate_account_id=account.id,
+            invoice_number=f"CORP-INV-MEL-{account.id:06d}-{now.strftime('%Y%m')}",
+            period_key=period_key,
+            amount=outstanding,
+            amount_paid=0,
+            currency="LSL",
+            status="issued",
+            due_at=now + timedelta(days=7),
+        )
+        db.add(invoice)
+        db.flush()
+        user = db.get(User, account.user_id)
+        if user:
+            from .communications import enqueue_notification
+            enqueue_notification(
+                db,
+                user.id,
+                "corporate_invoice",
+                "Your Meloli corporate invoice is ready",
+                f"Corporate invoice {invoice.invoice_number} for LSL {float(invoice.amount):,.2f} has been issued and is due on {invoice.due_at.strftime('%d %b %Y')}.",
+            )
+        created += 1
+
+    overdue = list(db.scalars(
+        select(CorporateInvoice).where(
+            CorporateInvoice.status.in_(["issued", "partial"]),
+            CorporateInvoice.due_at < now,
+        )
+    ))
+    for invoice in overdue:
+        invoice.status = "overdue"
+
+    if created or overdue:
+        db.commit()
+    return created
+
+
+@router.get("/api/v1/admin/corporate-invoices")
+def list_corporate_invoices(_: User = Depends(super_admin), db: Session = Depends(get_db)):
+    generate_monthly_corporate_invoices(db)
+    rows = list(db.scalars(select(CorporateInvoice).order_by(CorporateInvoice.issued_at.desc()).limit(200)))
+    result = []
+    for invoice in rows:
+        account = db.get(CorporateAccount, invoice.corporate_account_id)
+        user = db.get(User, account.user_id) if account else None
+        result.append({
+            "id": invoice.id,
+            "invoice_number": invoice.invoice_number,
+            "user_id": account.user_id if account else None,
+            "advertiser": (user.business_name or user.full_name) if user else None,
+            "amount": float(invoice.amount),
+            "amount_paid": float(invoice.amount_paid),
+            "balance": max(0.0, float(invoice.amount) - float(invoice.amount_paid)),
+            "currency": invoice.currency,
+            "status": invoice.status,
+            "period_key": invoice.period_key,
+            "issued_at": invoice.issued_at,
+            "due_at": invoice.due_at,
+            "paid_at": invoice.paid_at,
+        })
+    return result
+
+
+@router.get("/api/v1/commercial/my-corporate/invoices")
+def my_corporate_invoices(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if user.role != UserRole.ADVERTISER:
+        raise HTTPException(status_code=403, detail="Advertiser account required")
+    account = db.scalar(select(CorporateAccount).where(CorporateAccount.user_id == user.id))
+    if not account:
+        return []
+    generate_monthly_corporate_invoices(db)
+    rows = list(db.scalars(
+        select(CorporateInvoice)
+        .where(CorporateInvoice.corporate_account_id == account.id)
+        .order_by(CorporateInvoice.issued_at.desc())
+    ))
+    return [{
+        "id": invoice.id,
+        "invoice_number": invoice.invoice_number,
+        "amount": float(invoice.amount),
+        "amount_paid": float(invoice.amount_paid),
+        "balance": max(0.0, float(invoice.amount) - float(invoice.amount_paid)),
+        "currency": invoice.currency,
+        "status": invoice.status,
+        "period_key": invoice.period_key,
+        "issued_at": invoice.issued_at,
+        "due_at": invoice.due_at,
+        "paid_at": invoice.paid_at,
+    } for invoice in rows]
+
+
+def _corporate_invoice_response(invoice: CorporateInvoice, account: CorporateAccount, user: User, db: Session) -> Response:
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    pdf.setTitle(f"Meloli corporate invoice {invoice.invoice_number}")
+    draw_header(pdf, db, "Corporate invoice", invoice.invoice_number, invoice.status.upper())
+
+    top = height - 154
+    pdf.setFillColor(LIGHT)
+    pdf.roundRect(46, top - 92, width - 92, 92, 14, fill=1, stroke=0)
+    info_label(pdf, 62, top - 22, "Bill to", user.business_name or user.full_name)
+    info_label(pdf, 62, top - 58, "Email", user.email)
+    info_label(pdf, 305, top - 22, "Billing period", invoice.period_key)
+    info_label(pdf, 305, top - 58, "Due date", as_utc(invoice.due_at).strftime("%d %b %Y") if invoice.due_at else "—")
+
+    y = top - 130
+    pdf.setFillColor(NAVY)
+    pdf.roundRect(46, y - 24, width - 92, 24, 8, fill=1, stroke=0)
+    pdf.setFillColor(colors.white)
+    pdf.setFont("Helvetica-Bold", 8)
+    pdf.drawString(58, y - 16, "DESCRIPTION")
+    pdf.drawRightString(width - 58, y - 16, "AMOUNT")
+    y -= 50
+    pdf.setFillColor(NAVY)
+    pdf.setFont("Helvetica-Bold", 10)
+    pdf.drawString(58, y, "Corporate advertising services")
+    pdf.drawRightString(width - 58, y, f"{invoice.currency} {float(invoice.amount):,.2f}")
+    pdf.setFillColor(MUTED)
+    pdf.setFont("Helvetica", 8.5)
+    pdf.drawString(58, y - 16, "Advertising charged to the approved Meloli corporate credit account.")
+    pdf.setStrokeColor(colors.HexColor("#EEF0F5"))
+    pdf.line(46, y - 30, width - 46, y - 30)
+
+    total_y = y - 74
+    pdf.setFillColor(MUTED)
+    pdf.setFont("Helvetica", 9)
+    pdf.drawRightString(width - 175, total_y, "Paid")
+    pdf.drawRightString(width - 58, total_y, f"{invoice.currency} {float(invoice.amount_paid):,.2f}")
+    pdf.drawRightString(width - 175, total_y - 24, "Balance due")
+    pdf.setFillColor(RED if invoice.status != "paid" else colors.HexColor("#16A34A"))
+    pdf.setFont("Helvetica-Bold", 18)
+    balance = max(0.0, float(invoice.amount) - float(invoice.amount_paid))
+    pdf.drawRightString(width - 58, total_y - 28, f"{invoice.currency} {balance:,.2f}")
+
+    pdf.setFillColor(colors.HexColor("#FFF1F4") if invoice.status == "overdue" else LIGHT)
+    pdf.roundRect(46, 112, width - 92, 58, 12, fill=1, stroke=0)
+    pdf.setFillColor(RED if invoice.status == "overdue" else NAVY)
+    pdf.setFont("Helvetica-Bold", 8)
+    pdf.drawString(60, 148, "PAYMENT INFORMATION")
+    pdf.setFillColor(NAVY)
+    pdf.setFont("Helvetica", 8)
+    pdf.drawString(60, 132, f"Please quote invoice number {invoice.invoice_number} when making payment.")
+    pdf.drawString(60, 118, "This invoice is generated from the Meloli Airwaves corporate advertising account.")
+
+    draw_footer(pdf)
+    pdf.save()
+    return Response(
+        buffer.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="meloli-{invoice.invoice_number.lower()}.pdf"'},
+    )
+
+
+@router.get("/api/v1/admin/corporate-invoices/{invoice_id}/pdf")
+def corporate_invoice_record_pdf(invoice_id: int, _: User = Depends(super_admin), db: Session = Depends(get_db)):
+    invoice = db.get(CorporateInvoice, invoice_id)
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Corporate invoice not found")
+    account = db.get(CorporateAccount, invoice.corporate_account_id)
+    user = db.get(User, account.user_id) if account else None
+    if not account or not user:
+        raise HTTPException(status_code=409, detail="Invoice account data is incomplete")
+    return _corporate_invoice_response(invoice, account, user, db)
+
+
+@router.get("/api/v1/commercial/my-corporate/invoices/{invoice_id}/pdf")
+def my_corporate_invoice_record_pdf(invoice_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if user.role != UserRole.ADVERTISER:
+        raise HTTPException(status_code=403, detail="Advertiser account required")
+    account = db.scalar(select(CorporateAccount).where(CorporateAccount.user_id == user.id))
+    invoice = db.get(CorporateInvoice, invoice_id)
+    if not account or not invoice or invoice.corporate_account_id != account.id:
+        raise HTTPException(status_code=404, detail="Corporate invoice not found")
+    return _corporate_invoice_response(invoice, account, user, db)
 
 
 @router.get("/api/v1/admin/advertisers/{user_id}/corporate/settlements")
