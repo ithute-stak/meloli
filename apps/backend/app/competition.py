@@ -14,6 +14,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
 from .branding import LIGHT, MUTED, NAVY, draw_footer, draw_header, tenant_brand
+from .communications import enqueue_notification
 from .db import get_db
 from .models import AuditLog, Campaign, CompetitionCertification, CompetitionComment, CompetitionReaction, User, UserRole
 from .security import validate_token_user
@@ -293,6 +294,138 @@ def _result_payload(db: Session, campaign: Campaign) -> dict:
     }
 
 
+def sync_competition_campaign(db: Session, campaign: Campaign, automatic: bool = True) -> dict | None:
+    require_competition(campaign)
+    if existing_certification(db, campaign.id):
+        return None
+    comments = _fetch_facebook_comments(campaign, db)
+    summary = _replace_results(db, campaign, comments)
+    db.add(AuditLog(
+        actor_user_id=None,
+        action="competition.auto_synced" if automatic else "competition.synced",
+        entity_type="campaign",
+        entity_id=str(campaign.id),
+        detail=f"{summary['valid_likes']} valid likes",
+    ))
+    if campaign.tenant_id:
+        emit_realtime_event(
+            db,
+            "competition.results_updated",
+            tenant_id=campaign.tenant_id,
+            audience="tenant_all",
+            entity_type="campaign",
+            entity_id=campaign.id,
+            payload={
+                "campaign_id": campaign.id,
+                "valid_likes": summary["valid_likes"],
+                "invalid_likes": summary["invalid_likes"],
+                "automatic": automatic,
+            },
+        )
+    return summary
+
+
+def certify_competition_snapshot(
+    db: Session,
+    campaign: Campaign,
+    certified_by_user_id: int | None = None,
+    *,
+    require_plan: bool = True,
+) -> CompetitionCertification:
+    existing = existing_certification(db, campaign.id)
+    if existing:
+        return existing
+    if not campaign.tenant_id:
+        raise RuntimeError("Campaign is not attached to a tenant")
+    subscription, plan = current_tenant_subscription(db, campaign.tenant_id)
+    if require_plan and (not subscription or not plan or not plan.competition_certification):
+        raise RuntimeError("Tenant plan does not include competition certification")
+    result = _result_payload(db, campaign)
+    if result["summary"]["comments"] == 0:
+        raise RuntimeError("Sync competition votes before certifying results")
+    result.pop("certification", None)
+    snapshot = json.dumps(result, sort_keys=True, separators=(",", ":"), default=str)
+    digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
+    certification = CompetitionCertification(
+        campaign_id=campaign.id,
+        snapshot_json=snapshot,
+        snapshot_sha256=digest,
+        certified_by_user_id=certified_by_user_id,
+        certified_at=datetime.now(timezone.utc),
+    )
+    db.add(certification)
+    db.flush()
+    campaign.competition_closed_at = campaign.competition_closed_at or datetime.now(timezone.utc)
+    db.add(AuditLog(
+        actor_user_id=certified_by_user_id,
+        action="competition.certified",
+        entity_type="campaign",
+        entity_id=str(campaign.id),
+        detail=digest,
+    ))
+    emit_realtime_event(
+        db,
+        "competition.certified",
+        tenant_id=campaign.tenant_id,
+        audience="tenant_all",
+        entity_type="campaign",
+        entity_id=campaign.id,
+        payload={"campaign_id": campaign.id, "snapshot_sha256": digest, "certified_at": certification.certified_at},
+    )
+    return certification
+
+
+def close_due_competitions(db: Session, limit: int = 20) -> dict[str, int]:
+    now = datetime.now(timezone.utc)
+    campaigns = list(db.scalars(
+        select(Campaign)
+        .where(
+            Campaign.engagement_mode == "competition_one_comment",
+            Campaign.competition_closes_at.is_not(None),
+            Campaign.competition_closes_at <= now,
+            Campaign.competition_closed_at.is_(None),
+            Campaign.facebook_post_id.is_not(None),
+            Campaign.cancelled_at.is_(None),
+        )
+        .order_by(Campaign.competition_closes_at)
+        .limit(limit)
+    ))
+    closed = certified = failed = 0
+    for campaign in campaigns:
+        try:
+            sync_competition_campaign(db, campaign, automatic=True)
+            campaign.competition_closed_at = now
+            db.add(AuditLog(actor_user_id=None, action="competition.closed_automatically", entity_type="campaign", entity_id=str(campaign.id), detail=str(campaign.competition_closes_at)))
+            if campaign.competition_auto_certify:
+                certify_competition_snapshot(db, campaign, certified_by_user_id=None, require_plan=True)
+                certified += 1
+            enqueue_notification(
+                db,
+                campaign.advertiser_id,
+                "competition_closed",
+                f"{campaign.title} competition closed",
+                "The configured closing time has been reached. Final Facebook reactions were synchronized and the result is now frozen." if campaign.competition_auto_certify else "The configured closing time has been reached and final Facebook reactions were synchronized.",
+            )
+            if campaign.tenant_id:
+                emit_realtime_event(
+                    db,
+                    "competition.closed",
+                    tenant_id=campaign.tenant_id,
+                    audience="tenant_all",
+                    entity_type="campaign",
+                    entity_id=campaign.id,
+                    payload={"campaign_id": campaign.id, "auto_certified": bool(campaign.competition_auto_certify)},
+                )
+            db.commit()
+            closed += 1
+        except Exception as exc:
+            db.rollback()
+            db.add(AuditLog(actor_user_id=None, action="competition.auto_close_failed", entity_type="campaign", entity_id=str(campaign.id), detail=str(exc)[:1000]))
+            db.commit()
+            failed += 1
+    return {"closed": closed, "certified": certified, "failed": failed}
+
+
 def sync_published_competitions(db: Session, min_age_minutes: int = 10, limit: int = 10) -> int:
     cutoff = datetime.now(timezone.utc).timestamp() - max(1, min_age_minutes) * 60
     campaigns = list(db.scalars(
@@ -320,18 +453,9 @@ def sync_published_competitions(db: Session, min_age_minutes: int = 10, limit: i
         if existing_certification(db, campaign.id):
             continue
         try:
-            comments = _fetch_facebook_comments(campaign, db)
-            _replace_results(db, campaign, comments)
-            db.add(AuditLog(actor_user_id=None, action="competition.auto_synced", entity_type="campaign", entity_id=str(campaign.id), detail=f"{len(comments)} comments"))
-            if campaign.tenant_id:
-                result = _result_payload(db, campaign)
-                emit_realtime_event(
-                    db, "competition.results_updated", tenant_id=campaign.tenant_id, audience="tenant_all",
-                    entity_type="campaign", entity_id=campaign.id,
-                    payload={"campaign_id": campaign.id, "valid_likes": result["summary"]["valid_likes"], "invalid_likes": result["summary"]["invalid_likes"], "automatic": True},
-                )
-            db.commit()
-            synced += 1
+            if sync_competition_campaign(db, campaign, automatic=True) is not None:
+                db.commit()
+                synced += 1
         except Exception as exc:
             db.rollback()
             db.add(AuditLog(actor_user_id=None, action="competition.auto_sync_failed", entity_type="campaign", entity_id=str(campaign.id), detail=str(exc)[:1000]))
@@ -361,7 +485,7 @@ def sync_competition(campaign_id: int, user: User = Depends(current_user), db: S
         emit_realtime_event(
             db, "competition.results_updated", tenant_id=campaign.tenant_id, audience="tenant_all",
             entity_type="campaign", entity_id=campaign.id,
-            payload={"campaign_id": campaign.id, "valid_likes": summary["valid_likes"], "invalid_likes": summary["invalid_likes"]},
+            payload={"campaign_id": campaign.id, "valid_likes": summary["valid_likes"], "invalid_likes": summary["invalid_likes"], "automatic": False},
         )
     db.commit()
     return _result_payload(db, campaign)
@@ -400,41 +524,16 @@ def certify_competition(campaign_id: int, user: User = Depends(current_user), db
     require_competition(campaign)
     if not user.is_tenant_admin and user.role not in {UserRole.REVIEWER, UserRole.PUBLISHER, UserRole.SUPER_ADMIN}:
         raise HTTPException(status_code=403, detail="Portal staff access required")
-    existing = existing_certification(db, campaign.id)
-    if existing:
-        raise HTTPException(status_code=409, detail="Competition results are already certified")
-    if not campaign.tenant_id:
-        raise HTTPException(status_code=409, detail="Campaign is not attached to a tenant")
-    subscription, plan = current_tenant_subscription(db, campaign.tenant_id)
-    if user.role != UserRole.SUPER_ADMIN and (not subscription or not plan or not plan.competition_certification):
-        raise HTTPException(status_code=403, detail="Your tenant plan does not include competition certification")
-    result = _result_payload(db, campaign)
-    if result["summary"]["comments"] == 0:
-        raise HTTPException(status_code=409, detail="Sync competition votes before certifying results")
-    result.pop("certification", None)
-    snapshot = json.dumps(result, sort_keys=True, separators=(",", ":"), default=str)
-    digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
-    certification = CompetitionCertification(
-        campaign_id=campaign.id,
-        snapshot_json=snapshot,
-        snapshot_sha256=digest,
-        certified_by_user_id=user.id,
-        certified_at=datetime.now(timezone.utc),
-    )
-    db.add(certification)
-    db.flush()
-    db.add(AuditLog(
-        actor_user_id=user.id,
-        action="competition.certified",
-        entity_type="campaign",
-        entity_id=str(campaign.id),
-        detail=digest,
-    ))
-    emit_realtime_event(
-        db, "competition.certified", tenant_id=campaign.tenant_id, audience="tenant_all",
-        entity_type="campaign", entity_id=campaign.id,
-        payload={"campaign_id": campaign.id, "snapshot_sha256": digest, "certified_at": certification.certified_at},
-    )
+    try:
+        certification = certify_competition_snapshot(
+            db,
+            campaign,
+            certified_by_user_id=user.id,
+            require_plan=user.role != UserRole.SUPER_ADMIN,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=403 if "plan" in str(exc).lower() else 409, detail=str(exc)) from exc
+    digest = certification.snapshot_sha256
     db.commit()
     return {
         "id": certification.id,
