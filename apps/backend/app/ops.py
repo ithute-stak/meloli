@@ -1,6 +1,6 @@
 import io
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from .branding import BORDER, LIGHT, MUTED, NAVY, RED, draw_footer, draw_header, info_label
 from .db import get_db
-from .models import AdvertisingPackage, AuditLog, Campaign, CampaignStatus, Payment, PaymentStatus, PublicationAttempt, PublicationStatus, User, UserRole
+from .models import AdvertisingPackage, AuditLog, Campaign, CampaignStatus, NotificationDelivery, Payment, PaymentStatus, PublicationAttempt, PublicationStatus, User, UserRole
 from .security import validate_token_user, hash_password
 
 router = APIRouter()
@@ -133,6 +133,96 @@ def audit_log(_: User = Depends(super_admin), db: Session = Depends(get_db), lim
         "detail": r.detail,
         "created_at": r.created_at,
     } for r in rows]
+
+
+@router.get("/api/v1/admin/sla-summary")
+def sla_summary(_: User = Depends(staff), db: Session = Depends(get_db)):
+    now = datetime.now(timezone.utc)
+    review_hours = max(1, int(os.getenv("REVIEW_SLA_HOURS", "4")))
+    proof_hours = max(1, int(os.getenv("PROOF_RESPONSE_TARGET_HOURS", "24")))
+    review_cutoff = now - timedelta(hours=review_hours)
+    proof_cutoff = now - timedelta(hours=proof_hours)
+
+    review_rows = list(db.scalars(
+        select(Campaign)
+        .where(
+            Campaign.cancelled_at.is_(None),
+            Campaign.status.in_([CampaignStatus.SUBMITTED, CampaignStatus.IN_REVIEW]),
+            Campaign.updated_at <= review_cutoff,
+        )
+        .order_by(Campaign.updated_at)
+        .limit(100)
+    ))
+    proof_rows = list(db.scalars(
+        select(Campaign)
+        .where(
+            Campaign.cancelled_at.is_(None),
+            Campaign.proof_status == "pending_advertiser",
+            Campaign.proof_requested_at.is_not(None),
+            Campaign.proof_requested_at <= proof_cutoff,
+        )
+        .order_by(Campaign.proof_requested_at)
+        .limit(100)
+    ))
+    publish_rows = list(db.scalars(
+        select(Campaign)
+        .where(
+            Campaign.cancelled_at.is_(None),
+            Campaign.status == CampaignStatus.SCHEDULED,
+            Campaign.scheduled_publish_at.is_not(None),
+            Campaign.scheduled_publish_at < now,
+            Campaign.facebook_post_id.is_(None),
+        )
+        .order_by(Campaign.scheduled_publish_at)
+        .limit(100)
+    ))
+    failed_notifications = db.scalar(
+        select(func.count(NotificationDelivery.id)).where(NotificationDelivery.status == "failed")
+    ) or 0
+
+    advertiser_ids = {
+        row.advertiser_id
+        for row in [*review_rows, *proof_rows, *publish_rows]
+    }
+    advertisers = {
+        user.id: user
+        for user in db.scalars(select(User).where(User.id.in_(advertiser_ids)))
+    } if advertiser_ids else {}
+
+    def item(row: Campaign, kind: str, due_at: datetime | None):
+        point = due_at or row.updated_at or row.created_at
+        point = point.replace(tzinfo=timezone.utc) if point and point.tzinfo is None else point
+        age_hours = max(0.0, (now - point).total_seconds() / 3600) if point else 0.0
+        advertiser = advertisers.get(row.advertiser_id)
+        return {
+            "campaign_id": row.id,
+            "title": row.title,
+            "advertiser_id": row.advertiser_id,
+            "advertiser": (advertiser.business_name or advertiser.full_name) if advertiser else f"Advertiser #{row.advertiser_id}",
+            "kind": kind,
+            "status": row.status,
+            "proof_status": row.proof_status,
+            "age_hours": round(age_hours, 1),
+            "due_at": due_at,
+        }
+
+    rows = [
+        *[item(row, "review_overdue", row.updated_at) for row in review_rows],
+        *[item(row, "proof_waiting", row.proof_requested_at) for row in proof_rows],
+        *[item(row, "publish_overdue", row.scheduled_publish_at) for row in publish_rows],
+    ]
+    rows.sort(key=lambda row: row["age_hours"], reverse=True)
+    return {
+        "review_sla_hours": review_hours,
+        "proof_response_target_hours": proof_hours,
+        "review_overdue": len(review_rows),
+        "proof_waiting": len(proof_rows),
+        "publish_overdue": len(publish_rows),
+        "failed_notifications": int(failed_notifications),
+        "total_attention": len(rows) + int(failed_notifications),
+        "rows": rows[:200],
+        "checked_at": now,
+    }
 
 
 @router.get("/api/v1/admin/system-health")
