@@ -80,6 +80,39 @@ class TenantSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class TenantPlan(Base):
+    __tablename__ = "tenant_plans"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    code: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    description: Mapped[str] = mapped_column(Text, default="")
+    monthly_price: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
+    annual_price: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
+    currency: Mapped[str] = mapped_column(String(8), default="LSL")
+    max_staff: Mapped[int] = mapped_column(Integer, default=2)
+    max_campaigns_monthly: Mapped[int] = mapped_column(Integer, default=50)
+    custom_domains: Mapped[bool] = mapped_column(Boolean, default=False)
+    competition_certification: Mapped[bool] = mapped_column(Boolean, default=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TenantSubscription(Base):
+    __tablename__ = "tenant_subscriptions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), unique=True, index=True)
+    plan_id: Mapped[int] = mapped_column(ForeignKey("tenant_plans.id"), index=True)
+    status: Mapped[str] = mapped_column(String(40), default="trialing", index=True)
+    billing_period: Mapped[str] = mapped_column(String(20), default="monthly")
+    price_amount: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
+    currency: Mapped[str] = mapped_column(String(8), default="LSL")
+    current_period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    current_period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    trial_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
