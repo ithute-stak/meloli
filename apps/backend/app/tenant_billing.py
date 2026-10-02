@@ -26,6 +26,7 @@ from .models import (
     UserRole,
 )
 from .security import validate_token_user
+from .realtime import emit_realtime_event
 
 router = APIRouter()
 bearer = HTTPBearer(auto_error=False)
@@ -301,6 +302,11 @@ def create_checkout(payload: TenantCheckoutCreate, admin: User = Depends(tenant_
     )
     db.add(payment); db.flush()
     db.add(AuditLog(actor_user_id=admin.id, action="tenant.subscription_checkout_created", entity_type="tenant_subscription_invoice", entity_id=str(invoice.id), detail=plan.code))
+    emit_realtime_event(
+        db, "tenant_billing.checkout_created", tenant_id=admin.tenant_id, audience="platform_admins",
+        entity_type="tenant_subscription_invoice", entity_id=invoice.id,
+        payload={"invoice_id": invoice.id, "tenant_id": admin.tenant_id, "amount": float(amount), "currency": plan.currency, "plan": plan.code},
+    )
     db.commit()
     if amount <= 0:
         _activate_subscription(db, invoice, payment, admin)
@@ -337,9 +343,29 @@ def confirm_payment(payment_id: int, payload: TenantPaymentConfirm, admin: User 
         payment.status = "rejected"
         invoice.status = "payment_rejected"
         db.add(AuditLog(actor_user_id=admin.id, action="tenant.subscription_payment_rejected", entity_type="tenant_subscription_payment", entity_id=str(payment.id), detail=payment.reference))
+        emit_realtime_event(
+            db, "tenant_billing.payment_rejected", tenant_id=payment.tenant_id, audience="tenant_all",
+            entity_type="tenant_subscription_payment", entity_id=payment.id,
+            payload={"payment_id": payment.id, "invoice_id": invoice.id, "status": "rejected"},
+        )
+        emit_realtime_event(
+            db, "tenant_billing.payment_rejected", tenant_id=payment.tenant_id, audience="platform_admins",
+            entity_type="tenant_subscription_payment", entity_id=payment.id,
+            payload={"payment_id": payment.id, "invoice_id": invoice.id, "status": "rejected"},
+        )
         db.commit()
         return _invoice_payload(invoice, payment, db.get(TenantPlan, invoice.plan_id))
-    _activate_subscription(db, invoice, payment, admin)
+    subscription = _activate_subscription(db, invoice, payment, admin)
+    emit_realtime_event(
+        db, "tenant_billing.subscription_activated", tenant_id=payment.tenant_id, audience="tenant_all",
+        entity_type="tenant_subscription", entity_id=subscription.id,
+        payload={"subscription_id": subscription.id, "plan_id": subscription.plan_id, "status": subscription.status, "current_period_end": subscription.current_period_end},
+    )
+    emit_realtime_event(
+        db, "tenant_billing.subscription_activated", tenant_id=payment.tenant_id, audience="platform_admins",
+        entity_type="tenant_subscription", entity_id=subscription.id,
+        payload={"subscription_id": subscription.id, "tenant_id": payment.tenant_id, "plan_id": subscription.plan_id, "status": subscription.status},
+    )
     db.commit()
     return _invoice_payload(invoice, payment, db.get(TenantPlan, invoice.plan_id))
 
@@ -421,5 +447,15 @@ def process_tenant_subscription_lifecycle(db: Session) -> dict[str, int]:
                     "The tenant subscription grace period ended. The Page portal is suspended until a subscription payment is confirmed.",
                 )
             db.add(AuditLog(actor_user_id=None, action="tenant.subscription_suspended", entity_type="tenant", entity_id=str(tenant.id), detail=f"Expired {end.isoformat()}"))
+            emit_realtime_event(
+                db, "tenant.subscription_suspended", tenant_id=tenant.id, audience="tenant_all",
+                entity_type="tenant", entity_id=tenant.id,
+                payload={"tenant_id": tenant.id, "status": "suspended", "expired_at": end},
+            )
+            emit_realtime_event(
+                db, "tenant.subscription_suspended", tenant_id=tenant.id, audience="platform_admins",
+                entity_type="tenant", entity_id=tenant.id,
+                payload={"tenant_id": tenant.id, "status": "suspended", "expired_at": end},
+            )
     db.commit()
     return {"warned": warned, "past_due": past_due, "suspended": suspended}
