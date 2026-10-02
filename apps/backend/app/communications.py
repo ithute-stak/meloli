@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .models import Notification, NotificationDelivery, SystemSetting, User, UserRole
+from .models import AuditLog, Notification, NotificationDelivery, SystemSetting, User, UserRole
 from .security import validate_token_user, decrypt_secret, encrypt_secret
 
 router = APIRouter()
@@ -265,7 +265,20 @@ def communications_status(_: User = Depends(super_admin), db: Session = Depends(
 
 
 @router.put("/api/v1/system/communications")
-def update_communications(payload: CommunicationsUpdate, _: User = Depends(super_admin), db: Session = Depends(get_db)):
+def update_communications(payload: CommunicationsUpdate, admin: User = Depends(super_admin), db: Session = Depends(get_db)):
+    existing_smtp_password = setting(db, "notifications.smtp_password")
+    existing_whatsapp_token = setting(db, "notifications.whatsapp_access_token")
+    if payload.email_enabled and (not payload.smtp_host or not payload.from_email):
+        raise HTTPException(status_code=400, detail="SMTP host and from email are required before email delivery can be enabled")
+    if payload.smtp_username and not (payload.smtp_password or existing_smtp_password):
+        raise HTTPException(status_code=400, detail="SMTP password is required when an SMTP username is configured")
+    if payload.webhook_enabled and not payload.webhook_url:
+        raise HTTPException(status_code=400, detail="Webhook URL is required before webhook delivery can be enabled")
+    if payload.whatsapp_enabled:
+        if not payload.whatsapp_phone_number_id or not payload.whatsapp_template_name:
+            raise HTTPException(status_code=400, detail="WhatsApp Phone Number ID and approved template name are required")
+        if not (payload.whatsapp_access_token or existing_whatsapp_token):
+            raise HTTPException(status_code=400, detail="WhatsApp access token is required before WhatsApp delivery can be enabled")
     set_setting(db, "notifications.email_enabled", str(payload.email_enabled).lower())
     set_setting(db, "notifications.smtp_host", payload.smtp_host)
     set_setting(db, "notifications.smtp_port", str(payload.smtp_port))
@@ -285,8 +298,9 @@ def update_communications(payload: CommunicationsUpdate, _: User = Depends(super
     set_setting(db, "notifications.whatsapp_template_language", payload.whatsapp_template_language)
     if payload.whatsapp_access_token is not None:
         set_setting(db, "notifications.whatsapp_access_token", payload.whatsapp_access_token.get_secret_value(), encrypted=True)
+    db.add(AuditLog(actor_user_id=admin.id, action="communications.configuration_updated", entity_type="system_setting", detail="Email/webhook/WhatsApp delivery configuration updated"))
     db.commit()
-    return communications_status(_, db)
+    return communications_status(admin, db)
 
 
 class DeliveryTest(BaseModel):
@@ -294,7 +308,7 @@ class DeliveryTest(BaseModel):
 
 
 @router.post("/api/v1/system/communications/test-email")
-def test_email(payload: DeliveryTest, _: User = Depends(super_admin), db: Session = Depends(get_db)):
+def test_email(payload: DeliveryTest, admin: User = Depends(super_admin), db: Session = Depends(get_db)):
     try:
         send_direct_email(
             db,
@@ -302,8 +316,11 @@ def test_email(payload: DeliveryTest, _: User = Depends(super_admin), db: Sessio
             "Meloli notification delivery test",
             "This is a test email from the Meloli Airwaves Advertising Portal. SMTP delivery is working.",
         )
+        db.add(AuditLog(actor_user_id=admin.id, action="communications.email_test_sent", entity_type="notification_delivery", detail=payload.recipient))
+        db.commit()
         return {"ok": True, "recipient": payload.recipient}
     except Exception as exc:
+        db.rollback()
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
@@ -322,6 +339,8 @@ def test_whatsapp(payload: DeliveryTest, admin: User = Depends(super_admin), db:
     try:
         _send_whatsapp(db, notification, admin)
         db.rollback()
+        db.add(AuditLog(actor_user_id=admin.id, action="communications.whatsapp_test_sent", entity_type="notification_delivery", detail=payload.recipient))
+        db.commit()
         return {"ok": True, "recipient": payload.recipient}
     except Exception as exc:
         db.rollback()
