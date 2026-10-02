@@ -1,0 +1,36 @@
+"use client";
+
+import Link from "next/link";
+import { FormEvent, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { ArrowLeft, KeyRound, Loader2, Save, UserRound } from "lucide-react";
+import { api, getSessionUser, SessionUser, updateSessionUser } from "@/lib/api";
+
+type ProfileResponse=SessionUser&{phone?:string|null};
+
+export default function AccountPage(){
+  const router=useRouter();
+  const [user,setUser]=useState<SessionUser|null>(null);
+  const [profile,setProfile]=useState({full_name:"",business_name:"",phone:""});
+  const [password,setPassword]=useState({current_password:"",new_password:"",confirm:""});
+  const [busy,setBusy]=useState("");
+  const [message,setMessage]=useState("");
+  const [error,setError]=useState("");
+
+  useEffect(()=>{const current=getSessionUser();if(!current||current.role!=="advertiser"){router.replace("/login");return;}setUser(current);api<ProfileResponse>("/api/v1/auth/me",{},true).then(p=>{setProfile({full_name:p.full_name,business_name:p.business_name||"",phone:p.phone||""})}).catch(()=>setProfile({full_name:current.full_name,business_name:current.business_name||"",phone:""}));},[router]);
+
+  async function saveProfile(e:FormEvent){e.preventDefault();setBusy("profile");setError("");setMessage("");try{const updated=await api<ProfileResponse>("/api/v1/profile",{method:"PATCH",body:JSON.stringify(profile)},true);const session={id:updated.id,full_name:updated.full_name,business_name:updated.business_name,email:updated.email,role:updated.role};updateSessionUser(session);setUser(session);setMessage("Profile updated successfully.");}catch(err){setError(err instanceof Error?err.message:"Unable to update profile");}finally{setBusy("");}}
+  async function changePassword(e:FormEvent){e.preventDefault();setError("");setMessage("");if(password.new_password!==password.confirm){setError("New passwords do not match.");return;}setBusy("password");try{await api("/api/v1/profile/password",{method:"POST",body:JSON.stringify({current_password:password.current_password,new_password:password.new_password})},true);setPassword({current_password:"",new_password:"",confirm:""});setMessage("Password changed successfully.");}catch(err){setError(err instanceof Error?err.message:"Unable to change password");}finally{setBusy("");}}
+
+  if(!user)return <main className="grid min-h-screen place-items-center bg-[#f5f6fa]"><Loader2 className="animate-spin text-[#e31545]"/></main>;
+  return <main className="min-h-screen bg-[#f5f6fa] text-slate-900">
+    <header className="border-b border-slate-200 bg-white"><div className="mx-auto flex h-20 max-w-5xl items-center gap-4 px-4 sm:px-6"><Link href="/advertiser" className="grid h-10 w-10 place-items-center rounded-xl border border-slate-200"><ArrowLeft size={18}/></Link><div><h1 className="font-black text-[#070a45]">My Account</h1><p className="text-xs text-slate-500">Keep your advertiser and security details up to date.</p></div></div></header>
+    <div className="mx-auto grid max-w-5xl gap-6 p-4 sm:p-6 lg:grid-cols-2 lg:p-8">
+      <div className="lg:col-span-2">{error&&<div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-semibold text-rose-700">{error}</div>}{message&&<div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-700">{message}</div>}</div>
+      <form onSubmit={saveProfile} className="rounded-[1.6rem] border border-slate-200 bg-white p-5 sm:p-6"><div className="flex items-center gap-3"><div className="grid h-11 w-11 place-items-center rounded-xl bg-[#070a45]/5 text-[#070a45]"><UserRound size={19}/></div><div><h2 className="font-black text-[#070a45]">Advertiser profile</h2><p className="text-xs text-slate-500">{user.email}</p></div></div><div className="mt-6 space-y-4"><Field label="Full name"><input value={profile.full_name} onChange={e=>setProfile(v=>({...v,full_name:e.target.value}))} required className="input"/></Field><Field label="Business / organisation"><input value={profile.business_name} onChange={e=>setProfile(v=>({...v,business_name:e.target.value}))} className="input"/></Field><Field label="Phone"><input value={profile.phone} onChange={e=>setProfile(v=>({...v,phone:e.target.value}))} className="input"/></Field><button disabled={busy==="profile"} className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#070a45] text-sm font-extrabold text-white disabled:opacity-50">{busy==="profile"?<Loader2 className="animate-spin" size={17}/>:<Save size={17}/>} Save profile</button></div></form>
+      <form onSubmit={changePassword} className="rounded-[1.6rem] border border-slate-200 bg-white p-5 sm:p-6"><div className="flex items-center gap-3"><div className="grid h-11 w-11 place-items-center rounded-xl bg-[#e31545]/10 text-[#e31545]"><KeyRound size={19}/></div><div><h2 className="font-black text-[#070a45]">Password & security</h2><p className="text-xs text-slate-500">Use a strong password unique to Meloli.</p></div></div><div className="mt-6 space-y-4"><Field label="Current password"><input type="password" value={password.current_password} onChange={e=>setPassword(v=>({...v,current_password:e.target.value}))} required className="input"/></Field><Field label="New password"><input type="password" minLength={10} value={password.new_password} onChange={e=>setPassword(v=>({...v,new_password:e.target.value}))} required className="input"/></Field><Field label="Confirm new password"><input type="password" minLength={10} value={password.confirm} onChange={e=>setPassword(v=>({...v,confirm:e.target.value}))} required className="input"/></Field><button disabled={busy==="password"} className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#e31545] text-sm font-extrabold text-white disabled:opacity-50">{busy==="password"?<Loader2 className="animate-spin" size={17}/>:<KeyRound size={17}/>} Change password</button></div></form>
+    </div>
+    <style jsx>{`.input{height:3rem;width:100%;border-radius:.75rem;border:1px solid #e2e8f0;padding:0 .9rem;font-size:.875rem;outline:none}.input:focus{border-color:#070a45}`}</style>
+  </main>
+}
+function Field({label,children}:{label:string;children:React.ReactNode}){return <label className="block"><span className="mb-1.5 block text-xs font-extrabold text-slate-600">{label}</span>{children}</label>}
