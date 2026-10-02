@@ -11,6 +11,7 @@ type WebhookEvent={id:number;tenant_id?:number|null;page_id?:string|null;object_
 type MetaHealth={connected:boolean;page_name?:string|null;page_id?:string|null;health_status?:string|null;health_detail?:string|null;health_checked_at?:string|null};
 type Domain={id:number;hostname:string;status:string;health_status?:string|null;health_detail?:string|null};
 type Profile={name:string;domains:Domain[]};
+type PlatformHealth={backup:{status?:string|null;detail?:string|null;checked_at?:string|null}};
 
 export default function IntegrationsHealthPage(){
   const router=useRouter();
@@ -18,6 +19,7 @@ export default function IntegrationsHealthPage(){
   const [events,setEvents]=useState<WebhookEvent[]>([]);
   const [meta,setMeta]=useState<MetaHealth|null>(null);
   const [profile,setProfile]=useState<Profile|null>(null);
+  const [platformHealth,setPlatformHealth]=useState<PlatformHealth|null>(null);
   const [loading,setLoading]=useState(true);
   const [busy,setBusy]=useState<number|null>(null);
   const [error,setError]=useState("");
@@ -30,10 +32,13 @@ export default function IntegrationsHealthPage(){
       if(current?.is_tenant_admin){
         requests.push(api<MetaHealth>("/api/v1/tenant-admin/meta",{},true));
         requests.push(api<Profile>("/api/v1/tenant-admin/profile",{},true));
+      }else if(current?.role==="super_admin"){
+        requests.push(api<PlatformHealth>("/api/v1/admin/platform-health",{},true));
       }
       const result=await Promise.all(requests);
       setEvents(result[0] as WebhookEvent[]);
       if(current?.is_tenant_admin){setMeta(result[1] as MetaHealth);setProfile(result[2] as Profile)}
+      else if(current?.role==="super_admin"){setPlatformHealth(result[1] as PlatformHealth)}
       setError("");
     }catch(e){setError(e instanceof Error?e.message:"Unable to load integration health")}
     finally{if(!silent)setLoading(false)}
@@ -72,6 +77,7 @@ export default function IntegrationsHealthPage(){
     <div className="mx-auto max-w-[1400px] p-3 sm:p-4 lg:p-6">
       {error&&<div className="mb-4 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm font-semibold text-rose-700">{error}</div>}
       {loading?<div className="grid min-h-64 place-items-center"><Loader2 className="animate-spin text-[#0866ff]"/></div>:<>
+        {user?.role==="super_admin"&&<section className="mb-4"><HealthCard title="Backup health" status={platformHealth?.backup.status||"unknown"} detail={platformHealth?.backup.detail||"Backup health check has not run yet."}/></section>}
         {user?.is_tenant_admin&&<section className="mb-4 grid gap-3 md:grid-cols-2">
           <HealthCard title="Facebook / Meta connection" status={meta?.health_status|| (meta?.connected?"configured":"unknown")} detail={meta?.health_detail|| (meta?.page_name?"Connected to "+meta.page_name:"Health check has not run yet.")}/>
           <div className="fb-card p-4"><div className="flex items-center gap-3"><div className="grid h-10 w-10 place-items-center rounded-full bg-[#e7f3ff] text-[#0866ff]"><Activity size={18}/></div><div><h2 className="font-bold text-slate-900">Custom domains</h2><p className="text-xs text-[#65676b]">{profile?.domains?.length||0} configured</p></div></div><div className="mt-4 space-y-2">{!profile?.domains?.length?<p className="text-sm text-[#65676b]">No custom domains configured.</p>:profile.domains.map(domain=><div key={domain.id} className="flex items-center justify-between gap-3 rounded-lg bg-[#f7f8fa] px-3 py-2.5"><div className="min-w-0"><p className="truncate text-sm font-semibold text-slate-800">{domain.hostname}</p><p className="truncate text-xs text-[#65676b]">{domain.health_detail||"Health check pending"}</p></div><HealthPill value={domain.health_status||domain.status}/></div>)}</div></div>
