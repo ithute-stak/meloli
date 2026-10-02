@@ -12,6 +12,7 @@ class UserRegister(BaseModel):
     phone: str | None = Field(default=None, max_length=40)
     password: str = Field(min_length=8, max_length=128)
     referral_code: str | None = Field(default=None, max_length=50)
+    tenant_slug: str | None = Field(default=None, max_length=80)
 
 
 class UserLogin(BaseModel):
@@ -23,6 +24,8 @@ class UserLogin(BaseModel):
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
+    tenant_id: int | None
+    is_tenant_admin: bool
     full_name: str
     business_name: str | None
     email: EmailStr
@@ -81,6 +84,7 @@ class CampaignMediaOut(BaseModel):
 
 class CampaignCreate(BaseModel):
     title: str = Field(min_length=3, max_length=160)
+    engagement_mode: str = Field(default="normal", pattern="^(normal|competition_one_comment)$")
     caption: str = Field(min_length=3, max_length=5000)
     package_code: str = Field(min_length=2, max_length=50)
     preferred_publish_at: datetime | None = None
@@ -95,6 +99,7 @@ class CampaignOut(BaseModel):
     advertiser_id: int
     package_id: int
     title: str
+    engagement_mode: str
     caption: str
     media_url: str | None
     media_items: list[CampaignMediaOut] = Field(default_factory=list)
