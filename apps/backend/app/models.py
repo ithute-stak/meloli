@@ -60,7 +60,7 @@ class User(Base):
     totp_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
     auth_version: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    campaigns: Mapped[list["Campaign"]] = relationship(back_populates="advertiser")
+    campaigns: Mapped[list["Campaign"]] = relationship(back_populates="advertiser", foreign_keys="Campaign.advertiser_id")
     notifications: Mapped[list["Notification"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
@@ -99,7 +99,7 @@ class Campaign(Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    advertiser: Mapped[User] = relationship(back_populates="campaigns")
+    advertiser: Mapped[User] = relationship(back_populates="campaigns", foreign_keys=[advertiser_id])
     package: Mapped[AdvertisingPackage] = relationship(back_populates="campaigns")
     payments: Mapped[list["Payment"]] = relationship(back_populates="campaign")
     publications: Mapped[list["PublicationAttempt"]] = relationship(back_populates="campaign", cascade="all, delete-orphan")
