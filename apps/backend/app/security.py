@@ -21,11 +21,12 @@ def verify_password(password: str, password_hash: str) -> bool:
     return _pwd.verify(password, password_hash)
 
 
-def create_access_token(user_id: int, role: str) -> str:
+def create_access_token(user_id: int, role: str, auth_version: int = 0) -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "sub": str(user_id),
         "role": role,
+        "ver": auth_version,
         "iat": now,
         "exp": now + timedelta(minutes=JWT_EXPIRE_MINUTES),
     }
@@ -48,3 +49,15 @@ def encrypt_secret(value: str) -> str:
 
 def decrypt_secret(value: str) -> str:
     return _fernet().decrypt(value.encode("utf-8")).decode("utf-8")
+
+
+
+def validate_token_user(token: str, db):
+    from .models import User
+    payload = decode_access_token(token)
+    user = db.get(User, int(payload["sub"]))
+    if not user or not user.is_active:
+        raise ValueError("Account unavailable")
+    if int(payload.get("ver", 0)) != int(user.auth_version or 0):
+        raise ValueError("Session revoked")
+    return user
