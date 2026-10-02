@@ -279,3 +279,19 @@ class CorporateSettlement(Base):
     recorded_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     settled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CorporateInvoice(Base):
+    __tablename__ = "corporate_invoices"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    corporate_account_id: Mapped[int] = mapped_column(ForeignKey("corporate_accounts.id"), index=True)
+    invoice_number: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    period_key: Mapped[str] = mapped_column(String(7), index=True)
+    amount: Mapped[float] = mapped_column(Numeric(12, 2))
+    amount_paid: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
+    currency: Mapped[str] = mapped_column(String(8), default="LSL")
+    status: Mapped[str] = mapped_column(String(32), default="issued", index=True)
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
