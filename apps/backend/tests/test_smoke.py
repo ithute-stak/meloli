@@ -613,6 +613,28 @@ def test_advertising_workflow_smoke():
         assert alpha_meta_health.status_code == 200, alpha_meta_health.text
         assert alpha_meta_health.json()["health_status"] == "healthy"
 
+        backup_root = TEST_DIR / "test_backups"
+        if backup_root.exists():
+            shutil.rmtree(backup_root)
+        backup_root.mkdir(parents=True, exist_ok=True)
+        (backup_root / "last-success").write_text(datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
+        (backup_root / "db-test.dump").write_bytes(b"database")
+        (backup_root / "media-test.tar.gz").write_bytes(b"media")
+        previous_backup_root = os.environ.get("BACKUP_ROOT")
+        os.environ["BACKUP_ROOT"] = str(backup_root)
+        db = SessionLocal()
+        try:
+            backup_health = health_module.check_backup_freshness(db)
+            assert backup_health["healthy"] is True
+            assert backup_health["status"] == "healthy"
+        finally:
+            db.close()
+            if previous_backup_root is None:
+                os.environ.pop("BACKUP_ROOT", None)
+            else:
+                os.environ["BACKUP_ROOT"] = previous_backup_root
+            shutil.rmtree(backup_root)
+
         alpha_campaign = client.post(
             "/api/v1/campaigns",
             headers=auth(alpha_token),
@@ -630,6 +652,34 @@ def test_advertising_workflow_smoke():
         assert alpha_campaign.json()["engagement_mode"] == "competition_one_comment"
         assert alpha_campaign.json()["competition_closes_at"] is not None
         assert alpha_campaign.json()["competition_auto_certify"] is True
+
+        alpha_presence = client.post(
+            f"/api/v1/campaigns/{alpha_campaign.json()['id']}/presence/heartbeat",
+            headers=auth(alpha_token),
+        )
+        assert alpha_presence.status_code == 200, alpha_presence.text
+        alpha_presence_list = client.get(
+            f"/api/v1/campaigns/{alpha_campaign.json()['id']}/presence",
+            headers=auth(alpha_token),
+        )
+        assert alpha_presence_list.status_code == 200, alpha_presence_list.text
+        assert any(row["full_name"] == "Page Alpha Owner" for row in alpha_presence_list.json())
+        beta_cross_presence = client.post(
+            f"/api/v1/campaigns/{alpha_campaign.json()['id']}/presence/heartbeat",
+            headers=auth(beta_token),
+        )
+        assert beta_cross_presence.status_code == 403
+        alpha_leave_presence = client.delete(
+            f"/api/v1/campaigns/{alpha_campaign.json()['id']}/presence",
+            headers=auth(alpha_token),
+        )
+        assert alpha_leave_presence.status_code == 200, alpha_leave_presence.text
+        alpha_presence_after_leave = client.get(
+            f"/api/v1/campaigns/{alpha_campaign.json()['id']}/presence",
+            headers=auth(alpha_token),
+        )
+        assert alpha_presence_after_leave.status_code == 200
+        assert alpha_presence_after_leave.json() == []
 
         imported_votes = client.post(
             f"/api/v1/campaigns/{competition_id}/competition/import",
