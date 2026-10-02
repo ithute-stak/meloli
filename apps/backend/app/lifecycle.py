@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from .communications import send_direct_email
 from .db import get_db
-from .models import AuditLog, Campaign, CampaignStatus, CorporateAccount, PasswordResetToken, Payment, PaymentStatus, RefundRequest, User, UserRole
+from .models import AuthSession, AuditLog, Campaign, CampaignStatus, CorporateAccount, PasswordResetToken, Payment, PaymentStatus, RefundRequest, User, UserRole
 from .security import validate_token_user, hash_password
 
 router = APIRouter()
@@ -99,6 +99,8 @@ def complete_password_reset(payload: ResetComplete, db: Session = Depends(get_db
         raise HTTPException(status_code=400, detail="Reset link is invalid")
     user.password_hash = hash_password(payload.password)
     user.auth_version = int(user.auth_version or 0) + 1
+    for session in db.scalars(select(AuthSession).where(AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None))):
+        session.revoked_at = now
     row.used_at = now
     for token in db.scalars(select(PasswordResetToken).where(PasswordResetToken.user_id == user.id, PasswordResetToken.used_at.is_(None))):
         token.used_at = now
