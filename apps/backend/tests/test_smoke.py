@@ -285,7 +285,8 @@ def test_advertising_workflow_smoke():
 
         advertisers = client.get("/api/v1/admin/advertisers", headers=auth(admin_token))
         assert advertisers.status_code == 200
-        assert advertisers.json()[0]["confirmed_spend"] > 0
+        primary_advertiser = next(row for row in advertisers.json() if row["email"] == "advertiser@example.com")
+        assert primary_advertiser["confirmed_spend"] > 0
 
         staff = client.post(
             "/api/v1/admin/staff",
