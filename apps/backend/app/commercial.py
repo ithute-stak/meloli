@@ -12,6 +12,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
 from .branding import LIGHT, MUTED, NAVY, RED, draw_footer, draw_header, info_label
+from .communications import send_direct_email
 from .db import get_db
 from .models import AdvertiserSubscription, AdvertisingPackage, AuditLog, Campaign, CorporateAccount, CorporateInvoice, CorporateSettlement, Notification, Payment, PaymentStatus, PromoCode, SubscriptionPlan, User, UserRole
 from .security import validate_token_user
@@ -660,6 +661,40 @@ def corporate_invoice_record_pdf(invoice_id: int, _: User = Depends(super_admin)
     if not account or not user:
         raise HTTPException(status_code=409, detail="Invoice account data is incomplete")
     return _corporate_invoice_response(invoice, account, user, db)
+
+
+@router.post("/api/v1/admin/corporate-invoices/{invoice_id}/email")
+def email_corporate_invoice(invoice_id: int, admin: User = Depends(super_admin), db: Session = Depends(get_db)):
+    invoice = db.get(CorporateInvoice, invoice_id)
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Corporate invoice not found")
+    account = db.get(CorporateAccount, invoice.corporate_account_id)
+    user = db.get(User, account.user_id) if account else None
+    if not account or not user:
+        raise HTTPException(status_code=409, detail="Invoice account data is incomplete")
+    response = _corporate_invoice_response(invoice, account, user, db)
+    balance = max(0.0, float(invoice.amount) - float(invoice.amount_paid))
+    try:
+        send_direct_email(
+            db,
+            user.email,
+            f"Meloli invoice {invoice.invoice_number}",
+            (
+                f"Hello {user.full_name},\n\n"
+                f"Please find attached your Meloli Airwaves corporate advertising invoice {invoice.invoice_number}.\n"
+                f"Billing period: {invoice.period_key}\n"
+                f"Balance due: {invoice.currency} {balance:,.2f}\n"
+                f"Due date: {as_utc(invoice.due_at).strftime('%d %b %Y') if invoice.due_at else '—'}\n\n"
+                "Thank you,\nMeloli Airwaves"
+            ),
+            attachment=bytes(response.body),
+            attachment_name=f"{invoice.invoice_number}.pdf",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Invoice email delivery failed: {str(exc)[:180]}") from exc
+    audit(db, admin, "corporate_invoice.emailed", "corporate_invoice", invoice.id, user.email)
+    db.commit()
+    return {"id": invoice.id, "emailed_to": user.email}
 
 
 @router.get("/api/v1/commercial/my-corporate/invoices/{invoice_id}/pdf")
