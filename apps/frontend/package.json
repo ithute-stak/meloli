@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify:pwa": "node scripts/verify-pwa.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.31.0",
