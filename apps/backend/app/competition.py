@@ -46,8 +46,9 @@ def campaign_for_user(db: Session, campaign_id: int, user: User) -> Campaign:
     campaign = db.get(Campaign, campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    if user.tenant_id and campaign.tenant_id and user.tenant_id != campaign.tenant_id:
-        raise HTTPException(status_code=403, detail="Campaign belongs to another portal")
+    if user.role != UserRole.SUPER_ADMIN:
+        if not user.tenant_id or campaign.tenant_id != user.tenant_id:
+            raise HTTPException(status_code=403, detail="Campaign belongs to another portal")
     if user.role == UserRole.ADVERTISER and not user.is_tenant_admin and campaign.advertiser_id != user.id:
         raise HTTPException(status_code=403, detail="You cannot access this campaign")
     return campaign
@@ -132,10 +133,32 @@ def _replace_results(db: Session, campaign: Campaign, comments: list[ImportedCom
     db.execute(delete(CompetitionComment).where(CompetitionComment.campaign_id == campaign.id))
     db.flush()
 
+    # Meta paging and manual imports can occasionally contain the same comment
+    # more than once. Canonicalise by external comment id and merge reactions so
+    # a duplicate payload row can never inflate raw or valid totals.
+    canonical: dict[str, ImportedComment] = {}
+    for comment in comments:
+        existing = canonical.get(comment.comment_id)
+        if existing is None:
+            canonical[comment.comment_id] = ImportedComment(
+                comment_id=comment.comment_id,
+                message=comment.message,
+                author_name=comment.author_name,
+                reactions=list(comment.reactions),
+            )
+            continue
+        merged = {reaction.user_id: reaction for reaction in existing.reactions}
+        for reaction in comment.reactions:
+            merged[reaction.user_id] = reaction
+        existing.reactions = list(merged.values())
+        existing.message = comment.message or existing.message
+        existing.author_name = comment.author_name or existing.author_name
+
+    canonical_comments = list(canonical.values())
     seen_by_user: dict[str, set[str]] = defaultdict(set)
     names: dict[str, str | None] = {}
     deduped: dict[str, dict[str, ImportedReaction]] = {}
-    for comment in comments:
+    for comment in canonical_comments:
         per_comment: dict[str, ImportedReaction] = {}
         for reaction in comment.reactions:
             per_comment[reaction.user_id] = reaction
@@ -148,7 +171,7 @@ def _replace_results(db: Session, campaign: Campaign, comments: list[ImportedCom
     raw_total = 0
     valid_total = 0
 
-    for item in comments:
+    for item in canonical_comments:
         reactions = deduped.get(item.comment_id, {})
         raw = len(reactions)
         valid = sum(1 for user_id in reactions if user_id not in invalid_users)
