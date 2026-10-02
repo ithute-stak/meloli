@@ -247,6 +247,14 @@ def disable_two_factor(payload: TwoFactorDisable, user: User = Depends(current_u
     return {"enabled": False}
 
 
+@router.post("/api/v1/profile/logout-all")
+def logout_all_sessions(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    user.auth_version = int(user.auth_version or 0) + 1
+    audit(db, user, "sessions.revoked_all", "user", user.id)
+    db.commit()
+    return {"message": "All existing sessions have been revoked. Sign in again on devices you want to keep using."}
+
+
 @router.get("/api/v1/profile/security")
 def security_status(user: User = Depends(current_user)):
     return {"two_factor_enabled": bool(user.two_factor_enabled), "staff_two_factor_available": user.role != UserRole.ADVERTISER}
