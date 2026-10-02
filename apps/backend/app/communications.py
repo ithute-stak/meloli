@@ -108,6 +108,28 @@ def _send_email(db: Session, notification: Notification, user: User) -> None:
         smtp.send_message(msg)
 
 
+def send_direct_email(db: Session, recipient: str, subject: str, body: str) -> None:
+    host = setting(db, "notifications.smtp_host")
+    from_email = setting(db, "notifications.from_email")
+    if not host or not from_email:
+        raise RuntimeError("SMTP host and from address are required")
+    port = int(setting(db, "notifications.smtp_port") or "587")
+    username = setting(db, "notifications.smtp_username")
+    password = setting(db, "notifications.smtp_password")
+    use_tls = bool_setting(db, "notifications.smtp_use_tls")
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = from_email
+    msg["To"] = recipient
+    msg.set_content(body)
+    with smtplib.SMTP(host, port, timeout=20) as smtp:
+        if use_tls:
+            smtp.starttls()
+        if username:
+            smtp.login(username, password or "")
+        smtp.send_message(msg)
+
+
 def _send_webhook(db: Session, notification: Notification, user: User) -> None:
     url = setting(db, "notifications.webhook_url")
     if not url:
