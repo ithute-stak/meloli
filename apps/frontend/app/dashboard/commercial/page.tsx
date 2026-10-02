@@ -13,6 +13,7 @@ type Subscription={id:number;user_id:number;advertiser:string;plan_id:number;pla
 type Statement={advertiser:{id:number;name:string;email:string};account:{credit_limit:number;credit_used:number;available_credit:number;billing_cycle_day:number;active:boolean};transactions:{payment_id:number;campaign_id:number;campaign:string;amount:number;currency:string;created_at:string;status:string}[]};
 type ReceivableRow={user_id:number;advertiser:string;email?:string|null;credit_limit:number;billing_cycle_day:number;outstanding:number;available:number;utilization_percent:number;overdue:boolean;low_credit:boolean};
 type Receivables={accounts:number;outstanding_total:number;overdue_total:number;overdue_accounts:number;low_credit_accounts:number;rows:ReceivableRow[]};
+type CorporateInvoice={id:number;invoice_number:string;user_id?:number|null;advertiser?:string|null;amount:number;amount_paid:number;balance:number;currency:string;status:string;period_key:string;issued_at:string;due_at:string;paid_at?:string|null};
 
 export default function CommercialPage(){
  const router=useRouter();
@@ -22,6 +23,7 @@ export default function CommercialPage(){
  const [subscriptions,setSubscriptions]=useState<Subscription[]>([]);
  const [statement,setStatement]=useState<Statement|null>(null);
  const [receivables,setReceivables]=useState<Receivables|null>(null);
+ const [corporateInvoices,setCorporateInvoices]=useState<CorporateInvoice[]>([]);
  const [lastSettlementId,setLastSettlementId]=useState<number|null>(null);
  const [loading,setLoading]=useState(true);
  const [error,setError]=useState("");
@@ -37,14 +39,15 @@ export default function CommercialPage(){
  async function load(){
    setLoading(true);setError("");
    try{
-     const [p,pl,a,s,r]=await Promise.all([
+     const [p,pl,a,s,r,ci]=await Promise.all([
        api<Promo[]>("/api/v1/admin/promos/performance",{},true),
        api<Plan[]>("/api/v1/admin/subscription-plans",{},true),
        api<Advertiser[]>("/api/v1/admin/advertisers",{},true),
        api<Subscription[]>("/api/v1/admin/subscriptions",{},true),
-       api<Receivables>("/api/v1/admin/receivables/summary",{},true)
+       api<Receivables>("/api/v1/admin/receivables/summary",{},true),
+       api<CorporateInvoice[]>("/api/v1/admin/corporate-invoices",{},true)
      ]);
-     setPromos(p);setPlans(pl);setAdvertisers(a);setSubscriptions(s);setReceivables(r);
+     setPromos(p);setPlans(pl);setAdvertisers(a);setSubscriptions(s);setReceivables(r);setCorporateInvoices(ci);
    }catch(e){setError(e instanceof Error?e.message:"Unable to load commercial settings")}
    finally{setLoading(false)}
  }
@@ -88,6 +91,7 @@ export default function CommercialPage(){
     <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between"><Header icon={<Building2/>} title="Accounts receivable" text="Corporate balances, billing-cycle risk and available credit across approved advertisers."/><div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><Mini label="Outstanding" value={"LSL "+receivables.outstanding_total.toFixed(2)}/><Mini label="Overdue" value={"LSL "+receivables.overdue_total.toFixed(2)}/><Mini label="Overdue accts" value={String(receivables.overdue_accounts)}/><Mini label="Low credit" value={String(receivables.low_credit_accounts)}/></div></div>
     <div className="mt-5 overflow-x-auto"><table className="w-full min-w-[760px] text-left text-xs"><thead><tr className="border-b border-slate-100 text-[10px] font-black uppercase tracking-wider text-slate-400"><th className="px-3 py-3">Advertiser</th><th className="px-3 py-3">Outstanding</th><th className="px-3 py-3">Credit used</th><th className="px-3 py-3">Billing day</th><th className="px-3 py-3">Status</th><th className="px-3 py-3 text-right">Document</th></tr></thead><tbody>{receivables.rows.map(r=><tr key={r.user_id} className="border-b border-slate-50"><td className="px-3 py-4"><p className="font-extrabold text-[#070a45]">{r.advertiser}</p><p className="mt-1 text-[11px] text-slate-400">{r.email}</p></td><td className="px-3 py-4 font-extrabold text-[#070a45]">LSL {r.outstanding.toFixed(2)}</td><td className="px-3 py-4">{r.utilization_percent.toFixed(1)}%</td><td className="px-3 py-4">Day {r.billing_cycle_day}</td><td className="px-3 py-4"><span className={"rounded-full px-2.5 py-1 font-extrabold "+(r.overdue?"bg-rose-50 text-rose-700":r.low_credit?"bg-amber-50 text-amber-700":"bg-emerald-50 text-emerald-700")}>{r.overdue?"Overdue":r.low_credit?"Low credit":"Current"}</span></td><td className="px-3 py-4 text-right"><button type="button" onClick={()=>downloadInvoice(r.user_id)} className="rounded-lg border border-slate-200 bg-white px-3 py-2 font-extrabold text-[#070a45]">Invoice PDF</button></td></tr>)}</tbody></table></div>
    </section>}
+   {!loading&&corporateInvoices.length>0&&<section className="mt-6 overflow-hidden rounded-[1.6rem] border border-slate-200 bg-white"><div className="border-b border-slate-100 p-5 sm:p-6"><h2 className="font-black text-[#070a45]">Monthly corporate invoices</h2><p className="mt-1 text-sm text-slate-500">Persistent billing-cycle invoices with due dates and settlement status.</p></div><div className="overflow-x-auto"><table className="w-full min-w-[820px] text-left text-xs"><thead><tr className="border-b border-slate-100 text-[10px] font-black uppercase tracking-wider text-slate-400"><th className="px-5 py-3">Invoice</th><th className="px-5 py-3">Advertiser</th><th className="px-5 py-3">Period</th><th className="px-5 py-3">Due</th><th className="px-5 py-3">Balance</th><th className="px-5 py-3">Status</th><th className="px-5 py-3 text-right">PDF</th></tr></thead><tbody>{corporateInvoices.map(inv=><tr key={inv.id} className="border-b border-slate-50"><td className="px-5 py-4 font-extrabold text-[#070a45]">{inv.invoice_number}</td><td className="px-5 py-4">{inv.advertiser||("User #"+inv.user_id)}</td><td className="px-5 py-4">{inv.period_key}</td><td className="px-5 py-4">{new Date(inv.due_at).toLocaleDateString()}</td><td className="px-5 py-4 font-extrabold text-[#070a45]">{inv.currency} {inv.balance.toFixed(2)}</td><td className="px-5 py-4"><span className={"rounded-full px-2.5 py-1 font-extrabold "+(inv.status==="paid"?"bg-emerald-50 text-emerald-700":inv.status==="overdue"?"bg-rose-50 text-rose-700":inv.status==="partial"?"bg-amber-50 text-amber-700":"bg-blue-50 text-blue-700")}>{inv.status}</span></td><td className="px-5 py-4 text-right"><button type="button" onClick={()=>downloadPdf("/api/v1/admin/corporate-invoices/"+inv.id+"/pdf",inv.invoice_number+".pdf")} className="rounded-lg border border-slate-200 px-3 py-2 font-extrabold text-[#070a45]">Download</button></td></tr>)}</tbody></table></div></section>}
    {!loading&&<div className="mt-6 grid gap-6 xl:grid-cols-2">
     <section className="rounded-[1.6rem] border border-slate-200 bg-white p-5">
       <Header icon={<CalendarRange/>} title="Active subscriptions" text="Renew monthly plans and see remaining advertising allocation."/>
