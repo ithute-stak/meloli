@@ -94,6 +94,7 @@ def complete_password_reset(payload: ResetComplete, db: Session = Depends(get_db
     if not user or not user.is_active:
         raise HTTPException(status_code=400, detail="Reset link is invalid")
     user.password_hash = hash_password(payload.password)
+    user.auth_version = int(user.auth_version or 0) + 1
     row.used_at = now
     for token in db.scalars(select(PasswordResetToken).where(PasswordResetToken.user_id == user.id, PasswordResetToken.used_at.is_(None))):
         token.used_at = now
