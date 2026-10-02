@@ -697,6 +697,38 @@ def corporate_settlements(user_id: int, _: User = Depends(super_admin), db: Sess
     } for row in rows]
 
 
+@router.get("/api/v1/commercial/my-corporate/settlements")
+def my_corporate_settlements(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if user.role != UserRole.ADVERTISER:
+        raise HTTPException(status_code=403, detail="Advertiser account required")
+    account = db.scalar(select(CorporateAccount).where(CorporateAccount.user_id == user.id))
+    if not account:
+        return []
+    rows = list(db.scalars(
+        select(CorporateSettlement)
+        .where(CorporateSettlement.corporate_account_id == account.id)
+        .order_by(CorporateSettlement.settled_at.desc())
+    ))
+    return [{
+        "id": row.id,
+        "amount": float(row.amount),
+        "method": row.method,
+        "reference": row.reference,
+        "settled_at": row.settled_at,
+    } for row in rows]
+
+
+@router.get("/api/v1/commercial/my-corporate/settlements/{settlement_id}/receipt.pdf")
+def my_corporate_settlement_receipt(settlement_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if user.role != UserRole.ADVERTISER:
+        raise HTTPException(status_code=403, detail="Advertiser account required")
+    account = db.scalar(select(CorporateAccount).where(CorporateAccount.user_id == user.id))
+    settlement = db.get(CorporateSettlement, settlement_id)
+    if not account or not settlement or settlement.corporate_account_id != account.id:
+        raise HTTPException(status_code=404, detail="Corporate settlement not found")
+    return corporate_settlement_receipt(settlement_id, user, db)
+
+
 @router.get("/api/v1/admin/promos/performance")
 def promo_performance(_: User = Depends(super_admin), db: Session = Depends(get_db)):
     rows = list(db.scalars(select(PromoCode).order_by(PromoCode.uses.desc(), PromoCode.created_at.desc())))
