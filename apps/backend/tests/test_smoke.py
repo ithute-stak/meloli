@@ -669,7 +669,7 @@ def test_advertising_workflow_smoke():
             headers=auth(alpha_token),
         )
         assert alpha_presence_list.status_code == 200, alpha_presence_list.text
-        assert any(row["full_name"] == "Page Alpha Owner" for row in alpha_presence_list.json())
+        assert any(row["full_name"] == "Alpha Owner" for row in alpha_presence_list.json())
         beta_cross_presence = client.post(
             f"/api/v1/campaigns/{alpha_campaign.json()['id']}/presence/heartbeat",
             headers=auth(beta_token),
