@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .models import AuditLog, Campaign, CampaignPerformanceSnapshot, CampaignStatus, SupportTicket, TicketStatus, User, UserRole
+from .models import AuthSession, AuditLog, Campaign, CampaignPerformanceSnapshot, CampaignStatus, SupportTicket, TicketStatus, User, UserRole
 from .security import validate_token_user, decrypt_secret, encrypt_secret, hash_password, verify_password
 import pyotp
 
@@ -110,6 +110,9 @@ def change_password(payload: PasswordChange, user: User = Depends(current_user),
         raise HTTPException(status_code=400, detail="New password must be different")
     user.password_hash = hash_password(payload.new_password)
     user.auth_version = int(user.auth_version or 0) + 1
+    now = datetime.now(timezone.utc)
+    for session in db.scalars(select(AuthSession).where(AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None))):
+        session.revoked_at = now
     audit(db, user, "password.changed", "user", user.id)
     db.commit()
     return {"changed": True}
@@ -248,9 +251,43 @@ def disable_two_factor(payload: TwoFactorDisable, user: User = Depends(current_u
     return {"enabled": False}
 
 
+@router.get("/api/v1/profile/sessions")
+def list_sessions(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    rows = list(db.scalars(
+        select(AuthSession)
+        .where(AuthSession.user_id == user.id)
+        .order_by(AuthSession.created_at.desc())
+        .limit(50)
+    ))
+    return [{
+        "id": row.id,
+        "user_agent": row.user_agent,
+        "ip_address": row.ip_address,
+        "created_at": row.created_at,
+        "last_seen_at": row.last_seen_at,
+        "revoked_at": row.revoked_at,
+        "active": row.revoked_at is None,
+    } for row in rows]
+
+
+@router.post("/api/v1/profile/sessions/{session_id}/revoke")
+def revoke_session(session_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    row = db.get(AuthSession, session_id)
+    if not row or row.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if row.revoked_at is None:
+        row.revoked_at = datetime.now(timezone.utc)
+        audit(db, user, "session.revoked", "auth_session", row.id, row.user_agent)
+        db.commit()
+    return {"id": row.id, "active": False}
+
+
 @router.post("/api/v1/profile/logout-all")
 def logout_all_sessions(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    now = datetime.now(timezone.utc)
     user.auth_version = int(user.auth_version or 0) + 1
+    for session in db.scalars(select(AuthSession).where(AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None))):
+        session.revoked_at = now
     audit(db, user, "sessions.revoked_all", "user", user.id)
     db.commit()
     return {"message": "All existing sessions have been revoked. Sign in again on devices you want to keep using."}
