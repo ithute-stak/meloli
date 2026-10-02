@@ -5,8 +5,9 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 
 from .db import SessionLocal
+from .communications import deliver_pending, enqueue_notification
 from .meta_service import MetaError, publish_campaign as publish_to_meta
-from .models import Campaign, CampaignStatus, Notification, PublicationAttempt, PublicationStatus, SystemSetting
+from .models import Campaign, CampaignStatus, PublicationAttempt, PublicationStatus, SystemSetting
 from .security import decrypt_secret
 
 
@@ -24,6 +25,7 @@ def run_once() -> int:
         page_id = setting(db, "meta.page_id")
         token = setting(db, "meta.page_access_token")
         version = setting(db, "meta.graph_api_version")
+        deliver_pending(db)
         if not page_id or not token or not version:
             return 0
 
@@ -64,22 +66,24 @@ def run_once() -> int:
                 campaign.facebook_post_url = result.post_url
                 campaign.published_at = datetime.now(timezone.utc)
                 campaign.status = CampaignStatus.PUBLISHED
-                db.add(Notification(
-                    user_id=campaign.advertiser_id,
-                    kind="published",
-                    title="Your advert is live",
-                    message=f"{campaign.title} has been published automatically on the Meloli Airwaves Facebook Page.",
-                ))
+                enqueue_notification(
+                    db,
+                    campaign.advertiser_id,
+                    "published",
+                    "Your advert is live",
+                    f"{campaign.title} has been published automatically on the Meloli Airwaves Facebook Page.",
+                )
                 processed += 1
             except MetaError as exc:
                 attempt.status = PublicationStatus.FAILED
                 attempt.error_message = str(exc)[:4000]
-                db.add(Notification(
-                    user_id=campaign.advertiser_id,
-                    kind="publishing_delay",
-                    title="Publishing delayed",
-                    message=f"{campaign.title} could not be published at the scheduled time. Meloli has been alerted and will retry.",
-                ))
+                enqueue_notification(
+                    db,
+                    campaign.advertiser_id,
+                    "publishing_delay",
+                    "Publishing delayed",
+                    f"{campaign.title} could not be published at the scheduled time. Meloli has been alerted and will retry.",
+                )
             db.commit()
         return processed
     finally:
