@@ -627,6 +627,7 @@ def test_advertising_workflow_smoke():
             backup_health = health_module.check_backup_freshness(db)
             assert backup_health["healthy"] is True
             assert backup_health["status"] == "healthy"
+            db.commit()
         finally:
             db.close()
             if previous_backup_root is None:
@@ -634,6 +635,11 @@ def test_advertising_workflow_smoke():
             else:
                 os.environ["BACKUP_ROOT"] = previous_backup_root
             shutil.rmtree(backup_root)
+
+        platform_health = client.get("/api/v1/admin/platform-health", headers=auth(admin_token))
+        assert platform_health.status_code == 200, platform_health.text
+        assert platform_health.json()["backup"]["status"] == "healthy"
+        assert "database dumps" in platform_health.json()["backup"]["detail"]
 
         alpha_campaign = client.post(
             "/api/v1/campaigns",
