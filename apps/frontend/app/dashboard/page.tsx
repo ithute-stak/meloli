@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Bell, CalendarDays, CheckCircle2, ChevronRight, CircleDollarSign, Clock3, FileText, LayoutDashboard, Loader2, LogOut, Megaphone, Menu, Package, Search, Settings, TrendingUp, Users } from "lucide-react";
+import { Bell, CalendarDays, CheckCircle2, ChevronRight, CircleDollarSign, Clock3, FileText, Headphones, LayoutDashboard, Loader2, LogOut, Megaphone, Menu, Package, Search, Settings, TrendingUp, Users } from "lucide-react";
 import { api, clearSession, getSessionUser, SessionUser } from "@/lib/api";
 
 type Campaign={id:number;advertiser_id:number;title:string;status:string;preferred_publish_at?:string|null;scheduled_publish_at?:string|null;created_at:string};
