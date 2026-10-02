@@ -328,7 +328,22 @@ def decide_campaign(campaign_id: int, payload: CampaignDecision, staff: User = D
         raise HTTPException(status_code=400, detail="A change request must include a reviewer note")
     campaign.status = payload.status
     campaign.reviewer_note = payload.reviewer_note
+    if payload.status == CampaignStatus.APPROVED:
+        campaign.proof_status = "pending_advertiser"
+        campaign.proof_requested_at = datetime.now(timezone.utc)
+        campaign.proof_approved_at = None
+        campaign.proof_feedback = None
+        campaign.proof_requested_by_user_id = staff.id
+        campaign.proof_approved_by_user_id = None
+        notify(db, campaign.advertiser_id, "final_proof", "Final advert proof ready", f"{campaign.title} has passed Meloli editorial review. Please review and approve the final proof before publishing.")
+    elif payload.status in {CampaignStatus.CHANGES_REQUESTED, CampaignStatus.REJECTED}:
+        campaign.proof_status = "not_requested"
+        campaign.proof_approved_at = None
+        campaign.proof_approved_by_user_id = None
     if payload.status == CampaignStatus.SCHEDULED:
+        if campaign.proof_status != "approved":
+            raise HTTPException(status_code=409, detail="Advertiser final-proof approval is required before scheduling")
+
         if not payload.scheduled_publish_at:
             raise HTTPException(status_code=400, detail="Scheduled campaigns require a publishing date")
         campaign.scheduled_publish_at = payload.scheduled_publish_at
@@ -557,6 +572,8 @@ def publish_campaign(campaign_id: int, publisher: User = Depends(publisher_user)
         raise HTTPException(status_code=409, detail="Cancelled campaigns cannot be published")
     if campaign.status not in {CampaignStatus.APPROVED, CampaignStatus.SCHEDULED}:
         raise HTTPException(status_code=409, detail="Only approved or scheduled campaigns can be published")
+    if campaign.proof_status != "approved":
+        raise HTTPException(status_code=409, detail="Advertiser final-proof approval is required before publishing")
     if campaign.facebook_post_id:
         raise HTTPException(status_code=409, detail="Campaign has already been published")
 
