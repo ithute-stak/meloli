@@ -406,6 +406,8 @@ def decide_campaign(campaign_id: int, payload: CampaignDecision, staff: User = D
     audit(db, staff, f"campaign.{payload.status.value}", "campaign", campaign.id, payload.reviewer_note)
     db.commit()
     db.refresh(campaign)
+    from .corporate_api import emit_corporate_webhook
+    emit_corporate_webhook(db, campaign, f"campaign.{payload.status.value}")
     return campaign
 
 
@@ -664,12 +666,16 @@ def publish_campaign(campaign_id: int, publisher: User = Depends(publisher_user)
         db.commit()
         db.refresh(campaign)
         db.refresh(attempt)
+        from .corporate_api import emit_corporate_webhook
+        emit_corporate_webhook(db, campaign, "campaign.published")
         return PublishResult(campaign=campaign, publication=attempt)
     except MetaError as exc:
         attempt.status = PublicationStatus.FAILED
         attempt.error_message = str(exc)[:4000]
         audit(db, publisher, "campaign.publish_failed", "campaign", campaign.id, str(exc))
         db.commit()
+        from .corporate_api import emit_corporate_webhook
+        emit_corporate_webhook(db, campaign, "campaign.publish_failed")
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
