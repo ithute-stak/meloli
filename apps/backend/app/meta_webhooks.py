@@ -3,7 +3,7 @@ import hmac
 import json
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -37,7 +37,7 @@ def _tenant_for_page(db: Session, page_id: str | None) -> Tenant | None:
 
 
 @router.get("/api/v1/meta/webhook")
-def verify_meta_webhook(request: Request, db: Session = get_db()):
+def verify_meta_webhook(request: Request, db: Session = Depends(get_db)):
     mode = request.query_params.get("hub.mode")
     token = request.query_params.get("hub.verify_token")
     challenge = request.query_params.get("hub.challenge")
@@ -51,7 +51,7 @@ def verify_meta_webhook(request: Request, db: Session = get_db()):
 
 
 @router.post("/api/v1/meta/webhook", status_code=200)
-async def receive_meta_webhook(request: Request, db: Session = get_db()):
+async def receive_meta_webhook(request: Request, db: Session = Depends(get_db)):
     body = await request.body()
     try:
         payload = json.loads(body.decode("utf-8"))
