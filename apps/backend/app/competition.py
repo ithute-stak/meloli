@@ -397,7 +397,14 @@ def close_due_competitions(db: Session, limit: int = 20) -> dict[str, int]:
             campaign.competition_closed_at = now
             db.add(AuditLog(actor_user_id=None, action="competition.closed_automatically", entity_type="campaign", entity_id=str(campaign.id), detail=str(campaign.competition_closes_at)))
             if campaign.competition_auto_certify:
-                certify_competition_snapshot(db, campaign, certified_by_user_id=None, require_plan=True)
+                owner = db.scalar(
+                    select(User)
+                    .where(User.tenant_id == campaign.tenant_id, User.is_tenant_admin.is_(True), User.is_active.is_(True))
+                    .order_by(User.id)
+                )
+                if not owner:
+                    raise RuntimeError("Tenant has no active administrator to certify the competition")
+                certify_competition_snapshot(db, campaign, certified_by_user_id=owner.id, require_plan=True)
                 certified += 1
             enqueue_notification(
                 db,
