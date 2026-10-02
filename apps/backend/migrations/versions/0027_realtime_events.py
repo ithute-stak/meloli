@@ -20,6 +20,7 @@ def upgrade() -> None:
         sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id"), nullable=True),
         sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=True),
         sa.Column("topic", sa.String(length=100), nullable=False),
+        sa.Column("audience", sa.String(length=40), nullable=False, server_default="user"),
         sa.Column("entity_type", sa.String(length=80), nullable=True),
         sa.Column("entity_id", sa.String(length=120), nullable=True),
         sa.Column("payload_json", sa.Text(), nullable=False, server_default="{}"),
@@ -28,11 +29,13 @@ def upgrade() -> None:
     op.create_index("ix_realtime_events_tenant_id", "realtime_events", ["tenant_id"])
     op.create_index("ix_realtime_events_user_id", "realtime_events", ["user_id"])
     op.create_index("ix_realtime_events_topic", "realtime_events", ["topic"])
+    op.create_index("ix_realtime_events_audience", "realtime_events", ["audience"])
     op.create_index("ix_realtime_events_created_at", "realtime_events", ["created_at"])
 
 
 def downgrade() -> None:
     op.drop_index("ix_realtime_events_created_at", table_name="realtime_events")
+    op.drop_index("ix_realtime_events_audience", table_name="realtime_events")
     op.drop_index("ix_realtime_events_topic", table_name="realtime_events")
     op.drop_index("ix_realtime_events_user_id", table_name="realtime_events")
     op.drop_index("ix_realtime_events_tenant_id", table_name="realtime_events")
