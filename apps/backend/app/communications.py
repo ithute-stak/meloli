@@ -104,7 +104,7 @@ def _send_email(db: Session, notification: Notification, user: User) -> None:
         smtp.send_message(msg)
 
 
-def send_direct_email(db: Session, recipient: str, subject: str, body: str) -> None:
+def send_direct_email(db: Session, recipient: str, subject: str, body: str, attachment: bytes | None = None, attachment_name: str | None = None) -> None:
     host = setting(db, "notifications.smtp_host")
     from_email = setting(db, "notifications.from_email")
     if not host or not from_email:
@@ -118,6 +118,8 @@ def send_direct_email(db: Session, recipient: str, subject: str, body: str) -> N
     msg["From"] = from_email
     msg["To"] = recipient
     msg.set_content(body)
+    if attachment is not None:
+        msg.add_attachment(attachment, maintype="application", subtype="pdf", filename=attachment_name or "document.pdf")
     with smtplib.SMTP(host, port, timeout=20) as smtp:
         if use_tls:
             smtp.starttls()
