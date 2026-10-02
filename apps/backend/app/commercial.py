@@ -14,7 +14,7 @@ from reportlab.pdfgen import canvas
 from .branding import LIGHT, MUTED, NAVY, RED, draw_footer, draw_header, info_label
 from .db import get_db
 from .models import AdvertiserSubscription, AdvertisingPackage, AuditLog, Campaign, CorporateAccount, CorporateInvoice, CorporateSettlement, Notification, Payment, PaymentStatus, PromoCode, SubscriptionPlan, User, UserRole
-from .security import decode_access_token
+from .security import validate_token_user
 
 router = APIRouter()
 bearer = HTTPBearer(auto_error=False)
@@ -64,15 +64,11 @@ class CorporateSettlementWrite(BaseModel):
 
 def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bearer), db: Session = Depends(get_db)) -> User:
     if credentials is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Authentication required")
     try:
-        user_id = int(decode_access_token(credentials.credentials)["sub"])
+        return validate_token_user(credentials.credentials, db)
     except Exception as exc:
-        raise HTTPException(status_code=401, detail="Invalid or expired token") from exc
-    user = db.get(User, user_id)
-    if not user or not user.is_active:
-        raise HTTPException(status_code=401, detail="Account unavailable")
-    return user
+        raise HTTPException(status_code=401, detail="Invalid, expired or revoked session") from exc
 
 
 def super_admin(user: User = Depends(current_user)) -> User:
