@@ -131,8 +131,9 @@ def duplicate_campaign(campaign_id: int, user: User = Depends(current_user), db:
     source = db.get(Campaign, campaign_id)
     if not source:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    if user.tenant_id and source.tenant_id and source.tenant_id != user.tenant_id:
-        raise HTTPException(status_code=403, detail="Campaign belongs to another portal")
+    if user.role != UserRole.SUPER_ADMIN:
+        if not user.tenant_id or source.tenant_id != user.tenant_id:
+            raise HTTPException(status_code=403, detail="Campaign belongs to another portal")
     if user.role == UserRole.ADVERTISER and not user.is_tenant_admin and source.advertiser_id != user.id:
         raise HTTPException(status_code=403, detail="You cannot duplicate this campaign")
     advertiser_id = user.id if user.role == UserRole.ADVERTISER and not user.is_tenant_admin else source.advertiser_id
@@ -163,7 +164,7 @@ def get_review_checklist(campaign_id: int, staff: User = Depends(staff_user), db
     campaign = db.get(Campaign, campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    if staff.is_tenant_admin and staff.tenant_id != campaign.tenant_id:
+    if staff.role != UserRole.SUPER_ADMIN and (not staff.tenant_id or staff.tenant_id != campaign.tenant_id):
         raise HTTPException(status_code=403, detail="Campaign belongs to another portal")
     row = db.scalar(select(CampaignReviewChecklist).where(CampaignReviewChecklist.campaign_id == campaign_id))
     if not row:
@@ -202,7 +203,7 @@ def save_review_checklist(campaign_id: int, payload: ReviewChecklistWrite, staff
     campaign = db.get(Campaign, campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    if staff.is_tenant_admin and staff.tenant_id != campaign.tenant_id:
+    if staff.role != UserRole.SUPER_ADMIN and (not staff.tenant_id or staff.tenant_id != campaign.tenant_id):
         raise HTTPException(status_code=403, detail="Campaign belongs to another portal")
     if campaign.cancelled_at is not None:
         raise HTTPException(status_code=409, detail="Cancelled campaigns cannot be reviewed")
@@ -232,7 +233,11 @@ def save_review_checklist(campaign_id: int, payload: ReviewChecklistWrite, staff
 def create_ticket(payload: TicketCreate, user: User = Depends(current_user), db: Session = Depends(get_db)):
     if payload.campaign_id is not None:
         campaign = db.get(Campaign, payload.campaign_id)
-        if not campaign or (user.role == UserRole.ADVERTISER and campaign.advertiser_id != user.id):
+        if not campaign:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        if user.role != UserRole.SUPER_ADMIN and (not user.tenant_id or campaign.tenant_id != user.tenant_id):
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        if user.role == UserRole.ADVERTISER and not user.is_tenant_admin and campaign.advertiser_id != user.id:
             raise HTTPException(status_code=404, detail="Campaign not found")
     ticket = SupportTicket(user_id=user.id, campaign_id=payload.campaign_id, subject=payload.subject.strip(), message=payload.message.strip())
     db.add(ticket)
@@ -246,8 +251,14 @@ def create_ticket(payload: TicketCreate, user: User = Depends(current_user), db:
 @router.get("/api/v1/support/tickets", response_model=list[TicketOut])
 def list_tickets(user: User = Depends(current_user), db: Session = Depends(get_db)):
     query = select(SupportTicket).order_by(SupportTicket.updated_at.desc())
-    if user.role == UserRole.ADVERTISER:
+    if user.role == UserRole.ADVERTISER and not user.is_tenant_admin:
         query = query.where(SupportTicket.user_id == user.id)
+    elif user.role != UserRole.SUPER_ADMIN:
+        if not user.tenant_id:
+            raise HTTPException(status_code=403, detail="Staff account is not attached to a portal")
+        query = query.join(User, User.id == SupportTicket.user_id).where(User.tenant_id == user.tenant_id)
+    elif user.is_tenant_admin and user.tenant_id:
+        query = query.join(User, User.id == SupportTicket.user_id).where(User.tenant_id == user.tenant_id)
     return list(db.scalars(query))
 
 
@@ -255,6 +266,9 @@ def list_tickets(user: User = Depends(current_user), db: Session = Depends(get_d
 def update_ticket(ticket_id: int, payload: TicketUpdate, staff: User = Depends(staff_user), db: Session = Depends(get_db)):
     ticket = db.get(SupportTicket, ticket_id)
     if not ticket:
+        raise HTTPException(status_code=404, detail="Support ticket not found")
+    owner = db.get(User, ticket.user_id)
+    if staff.role != UserRole.SUPER_ADMIN and (not staff.tenant_id or not owner or owner.tenant_id != staff.tenant_id):
         raise HTTPException(status_code=404, detail="Support ticket not found")
     ticket.status = payload.status
     ticket.staff_reply = payload.staff_reply
@@ -269,7 +283,10 @@ def campaign_performance_history(campaign_id: int, user: User = Depends(current_
     campaign = db.get(Campaign, campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    if user.role == UserRole.ADVERTISER and campaign.advertiser_id != user.id:
+    if user.role != UserRole.SUPER_ADMIN:
+        if not user.tenant_id or campaign.tenant_id != user.tenant_id:
+            raise HTTPException(status_code=403, detail="Campaign belongs to another portal")
+    if user.role == UserRole.ADVERTISER and not user.is_tenant_admin and campaign.advertiser_id != user.id:
         raise HTTPException(status_code=403, detail="You cannot access this campaign")
     return list(db.scalars(
         select(CampaignPerformanceSnapshot)
