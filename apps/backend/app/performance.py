@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from .db import get_db
 from .meta_service import MetaError, fetch_post_performance
 from .models import Campaign, CampaignPerformance, CampaignPerformanceSnapshot, CampaignStatus, User, UserRole
+from .realtime import emit_realtime_event
 from .security import validate_token_user
 from .tenancy import tenant_setting
 
@@ -164,6 +165,49 @@ def sync_campaign_performance(campaign_id: int, publisher: User = Depends(publis
     db.commit()
     db.refresh(row)
     return row
+
+
+def sync_published_performance_automated(db: Session, limit: int = 100) -> dict[str, object]:
+    campaigns = list(db.scalars(
+        select(Campaign)
+        .where(
+            Campaign.status == CampaignStatus.PUBLISHED,
+            Campaign.facebook_post_id.is_not(None),
+            Campaign.tenant_id.is_not(None),
+        )
+        .order_by(Campaign.published_at.desc())
+        .limit(max(1, limit))
+    ))
+    synced = 0
+    failures: list[str] = []
+    touched_tenants: set[int] = set()
+    for campaign in campaigns:
+        token = tenant_setting(db, campaign.tenant_id, "meta.page_access_token")
+        version = tenant_setting(db, campaign.tenant_id, "meta.graph_api_version") or "v24.0"
+        if not token:
+            failures.append(f"Campaign {campaign.id}: portal Meta Page access token is not configured")
+            continue
+        try:
+            _sync_one(db, campaign, token, version)
+            db.commit()
+            synced += 1
+            touched_tenants.add(int(campaign.tenant_id))
+        except MetaError as exc:
+            db.rollback()
+            failures.append(f"Campaign {campaign.id}: {str(exc)[:180]}")
+    for tenant_id in touched_tenants:
+        emit_realtime_event(
+            db,
+            "performance.synced",
+            tenant_id=tenant_id,
+            audience="tenant_all",
+            entity_type="tenant",
+            entity_id=tenant_id,
+            payload={"tenant_id": tenant_id, "automatic": True},
+        )
+    if touched_tenants:
+        db.commit()
+    return {"eligible": len(campaigns), "synced": synced, "failed": len(failures), "failures": failures[:20]}
 
 
 @router.post("/api/v1/admin/performance/sync", response_model=BulkSyncResult)
