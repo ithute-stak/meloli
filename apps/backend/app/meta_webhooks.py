@@ -4,15 +4,27 @@ import json
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .models import AuditLog, Campaign, MetaWebhookEvent, Tenant
+from .models import AuditLog, Campaign, MetaWebhookEvent, Tenant, User, UserRole
 from .realtime import emit_realtime_event
 from .tenancy import tenant_setting
+from .security import validate_token_user
 
 router = APIRouter()
+bearer = HTTPBearer(auto_error=False)
+
+
+def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bearer), db: Session = Depends(get_db)) -> User:
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    try:
+        return validate_token_user(credentials.credentials, db)
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid, expired or revoked session") from exc
 
 
 def _verify_signature(secret: str, body: bytes, signature: str | None) -> bool:
@@ -166,13 +178,75 @@ def process_meta_webhook_events(db: Session, limit: int = 50) -> dict[str, int]:
             processed += 1
             db.commit()
         except Exception as exc:
+            event_id = row.id
+            attempted = int(row.attempts or 0)
             db.rollback()
-            row = db.get(MetaWebhookEvent, row.id)
+            row = db.get(MetaWebhookEvent, event_id)
             if row:
-                row.attempts += 1 if row.attempts == 0 else 0
-                row.status = "failed"
+                row.attempts = max(int(row.attempts or 0), attempted)
+                row.status = "dead_letter" if row.attempts >= 5 else "failed"
                 row.last_error = str(exc)[:2000]
                 failed += 1
+                if row.status == "dead_letter":
+                    emit_realtime_event(
+                        db,
+                        "meta.webhook_dead_letter",
+                        tenant_id=row.tenant_id,
+                        audience="tenant_staff" if row.tenant_id else "platform_admins",
+                        entity_type="meta_webhook_event",
+                        entity_id=row.id,
+                        payload={"event_id": row.id, "page_id": row.page_id, "attempts": row.attempts, "error": row.last_error},
+                    )
+                    emit_realtime_event(
+                        db,
+                        "meta.webhook_dead_letter",
+                        tenant_id=row.tenant_id,
+                        audience="platform_admins",
+                        entity_type="meta_webhook_event",
+                        entity_id=row.id,
+                        payload={"event_id": row.id, "tenant_id": row.tenant_id, "page_id": row.page_id, "attempts": row.attempts, "error": row.last_error},
+                    )
+                    db.add(AuditLog(actor_user_id=None, action="meta.webhook_dead_letter", entity_type="meta_webhook_event", entity_id=str(row.id), detail=row.last_error))
                 db.commit()
 
     return {"processed": processed, "failed": failed, "competition_syncs": competitions_synced}
+
+
+@router.get("/api/v1/admin/meta/webhook-events")
+def list_meta_webhook_events(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if user.role == UserRole.ADVERTISER and not user.is_tenant_admin:
+        raise HTTPException(status_code=403, detail="Portal staff access required")
+    query = select(MetaWebhookEvent).order_by(MetaWebhookEvent.received_at.desc()).limit(200)
+    if user.role != UserRole.SUPER_ADMIN:
+        if not user.tenant_id:
+            raise HTTPException(status_code=403, detail="Staff account is not attached to a tenant")
+        query = query.where(MetaWebhookEvent.tenant_id == user.tenant_id)
+    rows = list(db.scalars(query))
+    return [{
+        "id": row.id,
+        "tenant_id": row.tenant_id,
+        "page_id": row.page_id,
+        "object_type": row.object_type,
+        "status": row.status,
+        "attempts": row.attempts,
+        "last_error": row.last_error,
+        "received_at": row.received_at,
+        "processed_at": row.processed_at,
+    } for row in rows]
+
+
+@router.post("/api/v1/admin/meta/webhook-events/{event_id}/retry")
+def retry_meta_webhook_event(event_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    row = db.get(MetaWebhookEvent, event_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Webhook event not found")
+    if user.role != UserRole.SUPER_ADMIN:
+        if not user.tenant_id or row.tenant_id != user.tenant_id or not user.is_tenant_admin:
+            raise HTTPException(status_code=403, detail="Tenant administrator access required")
+    row.status = "pending"
+    row.attempts = 0
+    row.last_error = None
+    row.processed_at = None
+    db.add(AuditLog(actor_user_id=user.id, action="meta.webhook_retry_requested", entity_type="meta_webhook_event", entity_id=str(row.id)))
+    db.commit()
+    return {"id": row.id, "status": row.status, "attempts": row.attempts}
