@@ -9,6 +9,7 @@ import { useRealtimeTopics } from "@/app/components/RealtimeBridge";
 
 type Campaign={id:number;advertiser_id:number;title:string;status:string;preferred_publish_at?:string|null;scheduled_publish_at?:string|null;created_at:string};
 type Summary={advertisers:number;campaigns:number;awaiting_review:number;scheduled:number;published:number;paid_payments:number;revenue:number;currency:string;failed_publications:number};
+type Notification={id:number;read_at?:string|null};
 
 const label=(value:string)=>value.replaceAll("_"," ").replace(/\b\w/g,c=>c.toUpperCase());
 
@@ -17,6 +18,7 @@ export default function Dashboard(){
   const [user,setUser]=useState<SessionUser|null>(null);
   const [campaigns,setCampaigns]=useState<Campaign[]>([]);
   const [summary,setSummary]=useState<Summary|null>(null);
+  const [notifications,setNotifications]=useState<Notification[]>([]);
   const [loading,setLoading]=useState(true);
   const [query,setQuery]=useState("");
   const [error,setError]=useState("");
@@ -26,13 +28,14 @@ export default function Dashboard(){
   async function refreshDashboard(silent=false){
     if(!silent)setLoading(true);
     try{
-      const [c,s]=await Promise.all([api<Campaign[]>("/api/v1/campaigns",{},true),api<Summary>("/api/v1/admin/reports/summary",{},true)]);
-      setCampaigns(c);setSummary(s);setError("");
+      const [c,s,n]=await Promise.all([api<Campaign[]>("/api/v1/campaigns",{},true),api<Summary>("/api/v1/admin/reports/summary",{},true),api<Notification[]>("/api/v1/notifications",{},true)]);
+      setCampaigns(c);setSummary(s);setNotifications(n);setError("");
     }catch(e){if(!silent)setError(e instanceof Error?e.message:"Unable to load dashboard")}
     finally{if(!silent)setLoading(false)}
   }
   useEffect(()=>{const current=getSessionUser();if(!current||(current.role==="advertiser"&&!current.is_tenant_admin)){router.replace("/login");return;}setUser(current);refreshDashboard();if(current.is_tenant_admin)api<{name:string}>("/api/v1/tenant-admin/profile",{},true).then(p=>setPortalName(p.name)).catch(()=>undefined);},[router]);
   useRealtimeTopics(["campaign","payment","notification","tenant_billing","tenant"],()=>{refreshDashboard(true)});
+  const unreadNotifications=notifications.filter(item=>!item.read_at).length;
   const filtered=useMemo(()=>campaigns.filter(c=>c.title.toLowerCase().includes(query.toLowerCase())).slice(0,8),[campaigns,query]);
   const schedule=useMemo(()=>campaigns.filter(c=>c.scheduled_publish_at&&["scheduled","published"].includes(c.status)).sort((a,b)=>new Date(a.scheduled_publish_at!).getTime()-new Date(b.scheduled_publish_at!).getTime()).slice(0,5),[campaigns]);
   const kpis=useMemo(()=>{
@@ -67,7 +70,7 @@ export default function Dashboard(){
 
     {mobileNavOpen&&<><button aria-label="Close navigation overlay" onClick={()=>setMobileNavOpen(false)} className="fixed inset-0 z-50 bg-black/40 lg:hidden"/><aside className="fixed inset-y-0 left-0 z-[60] flex w-[86vw] max-w-[340px] flex-col bg-white shadow-2xl lg:hidden"><div className="flex h-16 items-center gap-3 border-b border-slate-200 px-4"><div className="grid h-10 w-10 place-items-center rounded-full bg-[#0866ff] text-white"><Megaphone size={19}/></div><div className="min-w-0 flex-1"><p className="truncate font-bold text-slate-900">{portalName}</p><p className="text-xs text-[#65676b]">Admin Console</p></div><button onClick={()=>setMobileNavOpen(false)} className="fb-icon-button"><X size={18}/></button></div><nav onClick={()=>setMobileNavOpen(false)} className="flex-1 space-y-1 overflow-y-auto p-2 text-[15px] font-semibold"><Nav icon={<LayoutDashboard/>} label="Overview" active href="/dashboard"/><Nav icon={<Megaphone/>} label="Campaigns" href="/dashboard/campaigns"/><Nav icon={<CalendarDays/>} label="Publishing calendar" href="/dashboard/calendar"/><Nav icon={<Package/>} label="Packages & pricing" href="/dashboard/packages"/>{user?.role==="super_admin"&&<Nav icon={<Globe2/>} label="Page portals" href="/dashboard/tenants"/>}{user?.role==="super_admin"&&<Nav icon={<CircleDollarSign/>} label="Tenant billing" href="/dashboard/tenant-billing"/>}{user?.role==="super_admin"&&<Nav icon={<Activity/>} label="Automation" href="/dashboard/automation"/>}<Nav icon={<CircleDollarSign/>} label="Payments" href="/dashboard/payments"/><Nav icon={<FileText/>} label="Reports" href="/dashboard/reports"/><Nav icon={<Headphones/>} label="Support" href="/dashboard/support"/>{user?.is_tenant_admin&&<Nav icon={<Users/>} label="Team & onboarding" href="/tenant-admin/team"/>}{user?.is_tenant_admin&&<Nav icon={<Settings/>} label="Portal settings" href="/tenant-admin/settings"/>}</nav><button onClick={logout} className="m-3 flex items-center gap-3 rounded-lg p-2.5 text-left hover:bg-[#f2f2f2]"><div className="fb-avatar h-10 w-10 text-sm">{user?.full_name?.slice(0,2).toUpperCase()||"MA"}</div><div className="min-w-0 flex-1"><p className="truncate text-sm font-bold">{user?.full_name||"Admin"}</p><p className="truncate text-xs text-[#65676b]">Sign out</p></div><LogOut size={17}/></button></aside></>}
 
-    <div className="lg:pl-72"><header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-slate-200 bg-white px-3 shadow-sm sm:px-4 lg:px-6"><button onClick={()=>setMobileNavOpen(true)} className="fb-icon-button lg:hidden" aria-label="Open navigation"><Menu size={20}/></button><div className="min-w-0 flex-1"><h1 className="truncate text-lg font-bold text-slate-900">Advertising Operations</h1><p className="hidden text-xs text-slate-500 sm:block">Live {portalName} advertising workflow</p></div><div className="hidden h-10 w-80 items-center gap-3 rounded-full bg-[#f0f2f5] px-4 md:flex"><Search size={17} className="text-slate-400"/><input value={query} onChange={e=>setQuery(e.target.value)} className="w-full bg-transparent text-sm outline-none" placeholder="Search campaigns..."/></div><Link href="/dashboard/notifications" className="fb-icon-button relative"><Bell size={18}/>{summary?.failed_publications?<span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-[#e31545]"/>:null}</Link></header>
+    <div className="lg:pl-72"><header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-slate-200 bg-white px-3 shadow-sm sm:px-4 lg:px-6"><button onClick={()=>setMobileNavOpen(true)} className="fb-icon-button lg:hidden" aria-label="Open navigation"><Menu size={20}/></button><div className="min-w-0 flex-1"><h1 className="truncate text-lg font-bold text-slate-900">Advertising Operations</h1><p className="hidden text-xs text-slate-500 sm:block">Live {portalName} advertising workflow</p></div><div className="hidden h-10 w-80 items-center gap-3 rounded-full bg-[#f0f2f5] px-4 md:flex"><Search size={17} className="text-slate-400"/><input value={query} onChange={e=>setQuery(e.target.value)} className="w-full bg-transparent text-sm outline-none" placeholder="Search campaigns..."/></div><Link href="/dashboard/notifications" className="fb-icon-button relative"><Bell size={18}/>{unreadNotifications>0?<span className="absolute -right-1 -top-1 min-w-5 rounded-full bg-[#e41e3f] px-1.5 py-0.5 text-center text-[10px] font-bold leading-4 text-white">{unreadNotifications>99?"99+":unreadNotifications}</span>:null}</Link></header>
 
       <div className="mx-auto max-w-[1500px] p-3 pb-24 sm:p-4 sm:pb-24 lg:p-6 lg:pb-6">
         {error&&<div className="mb-4 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm font-semibold text-rose-700">{error}</div>}
