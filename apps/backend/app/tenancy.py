@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .models import AuditLog, Tenant, TenantDomain, TenantSetting, User, UserRole
+from .models import AdvertisingPackage, AuditLog, Tenant, TenantDomain, TenantSetting, User, UserRole
 from .security import decode_access_token, encrypt_secret, hash_password, validate_token_user
 
 router = APIRouter()
@@ -156,6 +156,30 @@ def register_tenant(payload: TenantRegister, db: Session = Depends(get_db)):
     )
     db.add(owner)
     db.flush()
+
+    default_tenant = db.scalar(select(Tenant).where(Tenant.slug == "meloli-airwaves"))
+    package_query = select(AdvertisingPackage).where(AdvertisingPackage.active.is_(True))
+    if default_tenant:
+        package_query = package_query.where(AdvertisingPackage.tenant_id == default_tenant.id)
+    else:
+        package_query = package_query.where(AdvertisingPackage.tenant_id.is_(None))
+    for template in db.scalars(package_query.order_by(AdvertisingPackage.id)):
+        db.add(
+            AdvertisingPackage(
+                tenant_id=tenant.id,
+                code=template.code,
+                name=template.name,
+                description=template.description,
+                price=template.price,
+                currency=template.currency,
+                posts_included=template.posts_included,
+                max_media_items=template.max_media_items,
+                allow_video=template.allow_video,
+                allow_carousel=template.allow_carousel,
+                active=template.active,
+            )
+        )
+
     db.add(AuditLog(actor_user_id=owner.id, action="tenant.registered", entity_type="tenant", entity_id=str(tenant.id), detail=tenant.slug))
     db.commit()
     return {**tenant_payload(tenant), "owner_user_id": owner.id}
