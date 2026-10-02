@@ -46,9 +46,45 @@ class TicketStatus(StrEnum):
     CLOSED = "closed"
 
 
+class Tenant(Base):
+    __tablename__ = "tenants"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(180))
+    slug: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    facebook_page_name: Mapped[str | None] = mapped_column(String(180), nullable=True)
+    facebook_page_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    logo_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    accent_color: Mapped[str] = mapped_column(String(16), default="#e31545")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TenantDomain(Base):
+    __tablename__ = "tenant_domains"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    hostname: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    verification_token: Mapped[str] = mapped_column(String(120), unique=True)
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TenantSetting(Base):
+    __tablename__ = "tenant_settings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    key: Mapped[str] = mapped_column(String(160), index=True)
+    value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    encrypted: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id"), nullable=True, index=True)
+    is_tenant_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     full_name: Mapped[str] = mapped_column(String(160))
     business_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
@@ -67,6 +103,7 @@ class User(Base):
 class AdvertisingPackage(Base):
     __tablename__ = "advertising_packages"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id"), nullable=True, index=True)
     code: Mapped[str] = mapped_column(String(50), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(160))
     description: Mapped[str] = mapped_column(Text, default="")
@@ -84,9 +121,11 @@ class AdvertisingPackage(Base):
 class Campaign(Base):
     __tablename__ = "campaigns"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id"), nullable=True, index=True)
     advertiser_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     package_id: Mapped[int] = mapped_column(ForeignKey("advertising_packages.id"), index=True)
     title: Mapped[str] = mapped_column(String(160))
+    engagement_mode: Mapped[str] = mapped_column(String(50), default="normal", index=True)
     caption: Mapped[str] = mapped_column(Text)
     media_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     destination_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
@@ -439,3 +478,27 @@ class CorporateApiClient(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CompetitionComment(Base):
+    __tablename__ = "competition_comments"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id"), index=True)
+    external_comment_id: Mapped[str] = mapped_column(String(255), index=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    author_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    raw_likes: Mapped[int] = mapped_column(Integer, default=0)
+    valid_likes: Mapped[int] = mapped_column(Integer, default=0)
+    invalid_likes: Mapped[int] = mapped_column(Integer, default=0)
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CompetitionReaction(Base):
+    __tablename__ = "competition_reactions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id"), index=True)
+    comment_id: Mapped[int] = mapped_column(ForeignKey("competition_comments.id"), index=True)
+    external_user_id: Mapped[str] = mapped_column(String(255), index=True)
+    external_user_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    valid: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
