@@ -227,10 +227,11 @@ def get_campaign_for_user(db: Session, campaign_id: int, user: User) -> Campaign
     campaign = db.get(Campaign, campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    if user.role != UserRole.SUPER_ADMIN:
+        if not user.tenant_id or campaign.tenant_id != user.tenant_id:
+            raise HTTPException(status_code=403, detail="Campaign belongs to another portal")
     if user.role == UserRole.ADVERTISER and not user.is_tenant_admin and campaign.advertiser_id != user.id:
         raise HTTPException(status_code=403, detail="You cannot access this campaign")
-    if user.tenant_id and campaign.tenant_id and campaign.tenant_id != user.tenant_id:
-        raise HTTPException(status_code=403, detail="Campaign belongs to another portal")
     return campaign
 
 
