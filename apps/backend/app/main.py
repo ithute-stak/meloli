@@ -211,7 +211,7 @@ def register(payload: UserRegister, db: Session = Depends(get_db)):
     audit(db, user, "account.registered", "user", user.id)
     db.commit()
     db.refresh(user)
-    return AuthToken(access_token=create_access_token(user.id, user.role.value), user=user)
+    return AuthToken(access_token=create_access_token(user.id, user.role.value, user.auth_version or 0), user=user)
 
 
 @app.post("/api/v1/auth/login", response_model=AuthToken)
@@ -229,7 +229,7 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
         secret = decrypt_secret(user.totp_secret)
         if not pyotp.TOTP(secret).verify(payload.otp_code, valid_window=1):
             raise HTTPException(status_code=401, detail="Invalid two-factor authentication code")
-    return AuthToken(access_token=create_access_token(user.id, user.role.value), user=user)
+    return AuthToken(access_token=create_access_token(user.id, user.role.value, user.auth_version or 0), user=user)
 
 
 @app.get("/api/v1/auth/me", response_model=UserOut)
