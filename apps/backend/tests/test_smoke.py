@@ -214,6 +214,24 @@ def test_advertising_workflow_smoke():
         assert ops_health.status_code == 200
         assert ops_health.json()["database"] == "ok"
 
+        communications = client.put(
+            "/api/v1/system/communications",
+            headers=auth(admin_token),
+            json={
+                "email_enabled": False,
+                "smtp_host": "smtp.example.com",
+                "smtp_port": 587,
+                "smtp_username": "notifications@example.com",
+                "from_email": "notifications@example.com",
+                "smtp_use_tls": True,
+                "webhook_enabled": False,
+                "webhook_url": "https://example.com/webhook"
+            },
+        )
+        assert communications.status_code == 200, communications.text
+        assert communications.json()["email_enabled"] is False
+        assert communications.json()["webhook_enabled"] is False
+
         two_factor_setup = client.post("/api/v1/profile/2fa/setup", headers=auth(admin_token))
         assert two_factor_setup.status_code == 200, two_factor_setup.text
         otp_secret = two_factor_setup.json()["secret"]
