@@ -5,6 +5,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, CalendarDays, CheckCircle2, CircleDollarSign, Download, FileText, Loader2, ReceiptText } from "lucide-react";
 import { API_URL, api, getSessionUser, getToken } from "@/lib/api";
+import { useRealtimeTopics } from "@/app/components/RealtimeBridge";
 
 type Plan={id:number;code:string;name:string;description:string;monthly_price:number;annual_price:number;currency:string;max_staff:number;max_campaigns_monthly:number;custom_domains:boolean;competition_certification:boolean};
 type Payment={id:number;amount:number;currency:string;method:string;reference?:string|null;status:string;verification_code?:string|null;paid_at?:string|null};
@@ -19,6 +20,7 @@ export default function TenantBillingPage(){
 
  async function load(){setLoading(true);setError("");try{const [p,i]=await Promise.all([api<Plan[]>("/api/v1/tenant-plans"),api<Invoice[]>("/api/v1/tenant-admin/billing",{},true)]);setPlans(p);setInvoices(i);setForm(x=>({...x,plan_id:x.plan_id||p[0]?.id||0}));}catch(e){setError(e instanceof Error?e.message:"Unable to load billing")}finally{setLoading(false)}}
  useEffect(()=>{const u=getSessionUser();if(!u?.is_tenant_admin){router.replace("/advertiser");return;}load();},[router]);
+ useRealtimeTopics(["tenant_billing","tenant"],()=>{load()});
 
  const selected=useMemo(()=>plans.find(p=>p.id===form.plan_id),[plans,form.plan_id]);
  const price=selected?(form.billing_period==="annual"?selected.annual_price:selected.monthly_price):0;
