@@ -1,6 +1,6 @@
 # Meloli Airwaves Advertising Portal
 
-A responsive client-to-publisher advertising platform for Meloli Airwaves Media. Advertisers register, create campaigns, upload artwork or video, submit payment details and track editorial decisions. Meloli staff verify payments, review content, request changes, approve and schedule campaigns, then publish approved adverts to the configured Meloli Facebook Page.
+A responsive client-to-publisher advertising platform for Meloli Airwaves Media. Advertisers register, create campaigns, upload a single video or up to 10 carousel images, submit payment details and track editorial decisions. Meloli staff verify payments, review content, request changes, approve and schedule campaigns, then publish approved adverts to the configured Meloli Facebook Page.
 
 ## Stack
 
@@ -21,9 +21,9 @@ The architecture follows the modern patterns used across Ithute and LoanHub.
 
 ## Core workflow
 
-`Payment pending → Submitted → In review → Changes requested / Approved → Scheduled → Published`
+`Payment pending → Submitted → In review → Changes requested / Approved → Advertiser final proof → Scheduled → Published`
 
-Nothing is sent to Facebook before Meloli staff approval.
+Nothing is sent to Facebook before Meloli staff approval **and advertiser final-proof approval**.
 
 ## Local development
 
@@ -61,6 +61,21 @@ V1 supports traceable manual/offline payment submissions and Meloli verification
 
 Confirmed payments expose a PDF receipt endpoint. Advertisers can only access receipts and payment records for their own campaigns.
 
+## Backups and recovery
+
+The Compose stack includes a dedicated `backup` service. It creates:
+
+- PostgreSQL custom-format dumps in the `meloli_backups` volume
+- compressed archives of the `meloli_media` volume
+- a `last-success` marker only after both artifacts pass readability checks (`pg_restore --list` and `tar -tzf`)
+
+Key settings:
+
+- `BACKUP_INTERVAL_SECONDS` — default `86400` (daily)
+- `BACKUP_RETENTION_DAYS` — default `14`
+- `BACKUP_MAX_AGE_HOURS` — default `30`; older backups are flagged as stale in Operations Control Centre
+
+A restore should be performed as an operator maintenance task, not from the web UI. Use a separate test database/volume first, restore the selected PostgreSQL dump with `pg_restore`, extract the matching media archive, run `alembic upgrade head`, and verify `/health`, campaign documents, media access and login before restoring production. Keep the original production volumes untouched until the drill has been validated.
 ## Testing and CI
 
 GitHub Actions runs:
