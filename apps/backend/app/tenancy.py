@@ -4,6 +4,7 @@ import secrets
 from datetime import datetime, timezone
 
 import httpx
+import dns.resolver
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field, SecretStr
@@ -232,6 +233,36 @@ def add_custom_domain(payload: DomainWrite, admin: User = Depends(tenant_admin),
             "txt_name": f"_meloli-verify.{row.hostname}",
             "txt_value": row.verification_token,
         },
+    }
+
+
+@router.post("/api/v1/tenant-admin/domains/{domain_id}/verify")
+def verify_own_custom_domain(domain_id: int, admin: User = Depends(tenant_admin), db: Session = Depends(get_db)):
+    row = db.get(TenantDomain, domain_id)
+    if not row or row.tenant_id != admin.tenant_id:
+        raise HTTPException(status_code=404, detail="Custom domain not found")
+    txt_name = f"_meloli-verify.{row.hostname}"
+    expected = row.verification_token
+    try:
+        answers = dns.resolver.resolve(txt_name, "TXT")
+        values = []
+        for answer in answers:
+            text_value = b"".join(getattr(answer, "strings", [])).decode("utf-8") if getattr(answer, "strings", None) else str(answer).strip('"')
+            values.append(text_value)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=f"Verification TXT record not found yet: {str(exc)[:180]}") from exc
+    if expected not in values:
+        raise HTTPException(status_code=409, detail="Verification TXT record exists but does not contain the expected token")
+    row.status = "verified"
+    row.verified_at = datetime.now(timezone.utc)
+    db.add(AuditLog(actor_user_id=admin.id, action="tenant.domain_verified_dns", entity_type="tenant_domain", entity_id=str(row.id), detail=row.hostname))
+    db.commit()
+    return {
+        "id": row.id,
+        "hostname": row.hostname,
+        "status": row.status,
+        "verified_at": row.verified_at,
+        "routing_note": "Ownership is verified. Keep the domain pointed at the platform CNAME target for portal routing.",
     }
 
 
