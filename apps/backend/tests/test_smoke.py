@@ -448,6 +448,16 @@ def test_advertising_workflow_smoke():
         assert alpha_login.json()["user"]["is_tenant_admin"] is True
         assert alpha_login.json()["user"]["tenant_id"] != beta_login.json()["user"]["tenant_id"]
 
+        alpha_subscription = client.put(
+            f"/api/v1/admin/tenants/{tenant_a.json()['id']}/subscription",
+            headers=auth(admin_token),
+            json={"plan_id": business_plan["id"], "billing_period": "monthly", "status": "active"},
+        )
+        assert alpha_subscription.status_code == 200, alpha_subscription.text
+        assert alpha_subscription.json()["plan"]["code"] == "BUSINESS"
+        assert alpha_subscription.json()["plan"]["custom_domains"] is True
+        assert alpha_subscription.json()["plan"]["competition_certification"] is True
+
         alpha_campaign = client.post(
             "/api/v1/campaigns",
             headers=auth(alpha_token),
@@ -591,15 +601,6 @@ def test_advertising_workflow_smoke():
         )
         assert starter_domain.status_code == 403
         assert "does not include custom domains" in starter_domain.json()["detail"].lower()
-
-        alpha_subscription = client.put(
-            f"/api/v1/admin/tenants/{tenant_a.json()['id']}/subscription",
-            headers=auth(admin_token),
-            json={"plan_id": business_plan["id"], "billing_period": "monthly", "status": "active"},
-        )
-        assert alpha_subscription.status_code == 200, alpha_subscription.text
-        assert alpha_subscription.json()["plan"]["code"] == "BUSINESS"
-        assert alpha_subscription.json()["plan"]["custom_domains"] is True
 
         domain_request = client.post(
             "/api/v1/tenant-admin/domains",
