@@ -15,7 +15,7 @@ from .realtime import cleanup_realtime_events, emit_realtime_event
 from .security import decrypt_secret
 from .tenant_billing import process_tenant_subscription_lifecycle
 from .meta_webhooks import process_meta_webhook_events
-from .health_automation import check_custom_domains, check_meta_integrations, send_daily_tenant_digests
+from .health_automation import check_backup_freshness, check_custom_domains, check_meta_integrations, send_daily_tenant_digests
 from .presence import cleanup_review_presence
 
 
@@ -254,6 +254,7 @@ def run_once() -> dict[str, object]:
             ("tenant_subscription_lifecycle", max(300, int(os.getenv("TENANT_SUBSCRIPTION_CHECK_SECONDS", "3600"))), lambda s: process_tenant_subscription_lifecycle(s)),
             ("meta_health_check", max(300, int(os.getenv("META_HEALTH_CHECK_SECONDS", "1800"))), check_meta_integrations),
             ("domain_health_check", max(900, int(os.getenv("DOMAIN_HEALTH_CHECK_SECONDS", "3600"))), check_custom_domains),
+            ("backup_health_check", max(300, int(os.getenv("BACKUP_HEALTH_CHECK_SECONDS", "1800"))), check_backup_freshness),
             ("daily_tenant_digest", max(900, int(os.getenv("DAILY_DIGEST_CHECK_SECONDS", "3600"))), send_daily_tenant_digests),
             ("review_presence_cleanup", max(30, int(os.getenv("REVIEW_PRESENCE_CLEANUP_SECONDS", "60"))), cleanup_review_presence),
             ("realtime_event_cleanup", max(300, int(os.getenv("REALTIME_CLEANUP_SECONDS", "3600"))), lambda s: {"deleted": cleanup_realtime_events(s, retention_hours=max(1, int(os.getenv("REALTIME_EVENT_RETENTION_HOURS", "48"))))}),
