@@ -24,6 +24,9 @@ os.environ["FRONTEND_PUBLIC_URL"] = "http://localhost:3000"
 
 from fastapi.testclient import TestClient  # noqa: E402
 from app.asgi import app  # noqa: E402
+from app.db import SessionLocal  # noqa: E402
+from app.models import Tenant, TenantSubscription  # noqa: E402
+from app.tenant_billing import process_tenant_subscription_lifecycle  # noqa: E402
 
 
 def auth(token: str) -> dict[str, str]:
@@ -627,6 +630,97 @@ def test_advertising_workflow_smoke():
         assert onboarding.status_code == 200, onboarding.text
         assert onboarding.json()["subscription"]["plan"]["code"] == "BUSINESS"
         assert onboarding.json()["percent"] >= 50
+
+        # LoanHub-inspired tenant subscription checkout: create an invoice,
+        # keep the payment pending until platform confirmation, then activate
+        # the tenant subscription and issue branded PDF documents.
+        starter_plan = next(row for row in tenant_plans.json() if row["code"] == "STARTER")
+        beta_checkout = client.post(
+            "/api/v1/tenant-admin/billing/checkout",
+            headers=auth(beta_token),
+            json={
+                "plan_id": starter_plan["id"],
+                "billing_period": "monthly",
+                "payment_method": "bank_transfer",
+                "payment_reference": "BETA-BANK-001",
+            },
+        )
+        assert beta_checkout.status_code == 201, beta_checkout.text
+        beta_invoice = beta_checkout.json()
+        assert beta_invoice["status"] == "issued"
+        assert beta_invoice["payment"]["status"] == "pending"
+        beta_invoice_pdf = client.get(
+            f"/api/v1/tenant-billing/invoices/{beta_invoice['id']}.pdf",
+            headers=auth(beta_token),
+        )
+        assert beta_invoice_pdf.status_code == 200, beta_invoice_pdf.text
+        assert beta_invoice_pdf.content.startswith(b"%PDF")
+
+        beta_confirm = client.post(
+            f"/api/v1/admin/tenant-billing/payments/{beta_invoice['payment']['id']}/confirm",
+            headers=auth(admin_token),
+            json={"status": "paid", "reference": "BETA-BANK-001"},
+        )
+        assert beta_confirm.status_code == 200, beta_confirm.text
+        assert beta_confirm.json()["status"] == "paid"
+        assert beta_confirm.json()["payment"]["status"] == "paid"
+        assert len(beta_confirm.json()["payment"]["verification_code"]) == 20
+
+        beta_receipt_pdf = client.get(
+            f"/api/v1/tenant-billing/payments/{beta_invoice['payment']['id']}/receipt.pdf",
+            headers=auth(beta_token),
+        )
+        assert beta_receipt_pdf.status_code == 200, beta_receipt_pdf.text
+        assert beta_receipt_pdf.content.startswith(b"%PDF")
+
+        beta_billing = client.get("/api/v1/tenant-admin/billing", headers=auth(beta_token))
+        assert beta_billing.status_code == 200, beta_billing.text
+        assert any(row["invoice_number"] == beta_invoice["invoice_number"] and row["status"] == "paid" for row in beta_billing.json())
+
+        # Lifecycle processor marks expired subscriptions past due, then
+        # suspends the tenant when the configured grace period has elapsed.
+        db = SessionLocal()
+        try:
+            subscription = db.query(TenantSubscription).filter(TenantSubscription.tenant_id == tenant_b.json()["id"]).first()
+            assert subscription is not None
+            subscription.current_period_end = datetime.now(timezone.utc) - timedelta(days=8)
+            subscription.status = "active"
+            tenant_row = db.get(Tenant, tenant_b.json()["id"])
+            tenant_row.active = True
+            db.commit()
+            lifecycle = process_tenant_subscription_lifecycle(db)
+            assert lifecycle["suspended"] >= 1
+            db.refresh(subscription)
+            db.refresh(tenant_row)
+            assert subscription.status == "suspended"
+            assert tenant_row.active is False
+        finally:
+            db.close()
+
+        beta_resolve_after_suspend = client.get("/api/v1/tenants/resolve?slug=page-beta")
+        assert beta_resolve_after_suspend.status_code == 404
+
+        # Confirming a later payment reactivates the tenant.
+        beta_reactivation = client.post(
+            "/api/v1/tenant-admin/billing/checkout",
+            headers=auth(beta_token),
+            json={
+                "plan_id": starter_plan["id"],
+                "billing_period": "monthly",
+                "payment_method": "bank_transfer",
+                "payment_reference": "BETA-BANK-002",
+            },
+        )
+        assert beta_reactivation.status_code == 201, beta_reactivation.text
+        reactivation_payment_id = beta_reactivation.json()["payment"]["id"]
+        reactivated = client.post(
+            f"/api/v1/admin/tenant-billing/payments/{reactivation_payment_id}/confirm",
+            headers=auth(admin_token),
+            json={"status": "paid", "reference": "BETA-BANK-002"},
+        )
+        assert reactivated.status_code == 200, reactivated.text
+        beta_resolve_restored = client.get("/api/v1/tenants/resolve?slug=page-beta")
+        assert beta_resolve_restored.status_code == 200, beta_resolve_restored.text
 
         two_factor_setup = client.post("/api/v1/profile/2fa/setup", headers=auth(admin_token))
         assert two_factor_setup.status_code == 200, two_factor_setup.text
