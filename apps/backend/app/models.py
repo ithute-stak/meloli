@@ -152,6 +152,7 @@ class RealtimeEvent(Base):
     tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id"), nullable=True, index=True)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     topic: Mapped[str] = mapped_column(String(100), index=True)
+    audience: Mapped[str] = mapped_column(String(40), default="user", index=True)
     entity_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
     entity_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     payload_json: Mapped[str] = mapped_column(Text, default="{}")
