@@ -38,8 +38,21 @@ jobs:
       - name: Typecheck
         working-directory: apps/frontend
         run: pnpm typecheck
+      - name: Verify PWA assets
+        working-directory: apps/frontend
+        run: pnpm verify:pwa
       - name: Build frontend
         working-directory: apps/frontend
         env:
           NEXT_PUBLIC_API_URL: http://localhost:8000
         run: pnpm build
+
+
+  deployment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Docker Compose
+        run: docker compose config >/dev/null
+      - name: Validate backup scripts
+        run: sh -n apps/backup/backup.sh && sh -n apps/backup/restore-drill.sh
